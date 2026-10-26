@@ -343,7 +343,7 @@ def render(sim, spec, fmt, out_path, preview_dir=None, preview_times=()):
         wav = os.path.join(tmp, "a.wav")
         sound.build(n / FPS, events, wav)
         cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{scene.W}x{scene.H}",
-               "-r", str(FPS), "-i", "-", "-i", wav, "-c:v", "libx264", "-preset", "medium", "-crf", "19",
+               "-r", str(FPS), "-i", "-", "-i", wav, "-c:v", "libx264", "-preset", "medium", "-crf", "21", "-maxrate", "8M", "-bufsize", "16M",
                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out_path]
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
         for fi in range(n):

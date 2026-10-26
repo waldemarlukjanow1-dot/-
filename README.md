@@ -1,4 +1,33 @@
-# TikTok Tür-Rätsel – Video-Generator
+# TikTok-Video-Generator
+
+## Satisfying-Simulationen (aktuelle Nische)
+
+Neon-Physiksimulationen mit Tönen bei jedem Aufprall, 52–55 s, fertig zum Hochladen.
+
+```
+python3 make_satisfying.py                         # alle Episoden, Hoch- + Querformat
+python3 make_satisfying.py s01_ring_battle -f vertical
+python3 make_satisfying.py --preview               # Standbilder inkl. simulierter TikTok-Oberfläche
+python3 make_satisfying.py --search ring           # spannende Seeds für ein neues Ring-Battle finden
+```
+
+| Episode | Idee | Retention-Trick |
+|---|---|---|
+| `s01_ring_battle` | 4 Farben in 22 rotierenden Ringen, wer durch eine Lücke fliegt, zerschlägt den Ring (+1) | Seed mit 5 Führungswechseln, Comeback-Sieg mit 1 Punkt Vorsprung; „NOCH X RINGE“-Zähler |
+| `s02_wachsender_ball` | Ball wächst bei jedem Aufprall bis er den Kreis füllt | Fortschrittsbalken in %, Melodie wird zum Ende immer schneller, Explosion |
+| `s03_last_one_standing` | 6 Farben, Arena mit drehender Lücke, wer rausfällt ist raus | Ausscheiden ca. alle 6–11 s, „FINALE: X GEGEN Y“ |
+
+Jedes Video: Frage-Hook ab Frame 1, „Schreib deine Farbe in die Kommentare“, Gewinner + Konfetti,
+dann Cliffhanger „TEIL 2 – Folge mir“. Die Simulation ist deterministisch (Seed): das Ergebnis ist
+vorab bekannt und so gewählt, dass es bis zum Schluss spannend bleibt.
+Beschreibungstexte für TikTok stehen in `satisfying/episodes.py` (`caption`).
+
+Code: `satisfying/sim.py` (Physik), `satisfying/scene.py` (Neon-Rendering, Layouts/Safe-Zones),
+`satisfying/sound.py` (Marimba-Melodie Am–F–C–G, Glas, Fanfare).
+
+---
+
+## Tür-Rätsel (ältere Nische)
 
 Erstellt 45–60-Sekunden-Rätselvideos im Stil „Welche Tür wählst du?“, fertig zum Hochladen.
 

@@ -16,6 +16,9 @@ python3 make_satisfying.py --search ring           # spannende Seeds für ein ne
 | `s01_ring_battle` | 4 Farben in 22 rotierenden Ringen, wer durch eine Lücke fliegt, zerschlägt den Ring (+1) | Seed mit 5 Führungswechseln, Comeback-Sieg mit 1 Punkt Vorsprung; „NOCH X RINGE“-Zähler |
 | `s02_wachsender_ball` | Ball wächst bei jedem Aufprall bis er den Kreis füllt | Fortschrittsbalken in %, Melodie wird zum Ende immer schneller, Explosion |
 | `s03_last_one_standing` | 6 Farben, Arena mit drehender Lücke, wer rausfällt ist raus | Ausscheiden ca. alle 6–11 s, „FINALE: X GEGEN Y“ |
+| `b01_ball_explosion` | Jeder Ball, der durch die Lücke entkommt, wird zu 2 neuen – bis 250 Bälle | Exponentielles Wachstum, Zähler + %-Balken, „GLEICH 250!“ |
+| `b02_string_art` | Jeder Aufprall = neuer Punkt, alle Punkte sind per Neon-Linie mit dem Ball verbunden | Bild wird immer voller, „Was zeichnet der Ball?“ |
+| `b03_ring_escape_solo` | Ein Ball muss durch 20 rotierende Ringe, nimmt jeweils die Farbe des nächsten Rings an | „RING 12/20“, „NUR NOCH 2 RINGE!“ |
 
 Jedes Video: Frage-Hook ab Frame 1, „Schreib deine Farbe in die Kommentare“, Gewinner + Konfetti,
 dann Cliffhanger „TEIL 2 – Folge mir“. Die Simulation ist deterministisch (Seed): das Ergebnis ist

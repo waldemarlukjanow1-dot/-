@@ -8,6 +8,8 @@ import colorsys
 import math
 import random
 
+import numpy as np
+
 FPS = 30
 SUB = 8  # Physik-Substeps pro Frame
 DT = 1 / (FPS * SUB)
@@ -15,7 +17,7 @@ ARENA = 400.0
 
 COLORS = {
     "ROT": (255, 60, 70), "BLAU": (50, 140, 255), "GRÜN": (40, 230, 110), "GELB": (255, 215, 30),
-    "LILA": (190, 80, 255), "ORANGE": (255, 140, 30), "PINK": (255, 90, 200), "TÜRKIS": (40, 230, 230),
+    "LILA": (190, 80, 255), "ORANGE": (255, 140, 30), "PINK": (255, 90, 200), "TÜRKIS": (40, 230, 230), "WEISS": (240, 240, 255),
 }
 
 
@@ -176,6 +178,8 @@ class RingEscape(Sim):
                 self.score[i] += 1
                 self.ev("break", ring=self.k, ball=i, gap=self.gap(ring, self.t))
                 self.k += 1
+                if len(self.balls) == 1 and self.k < len(self.rings):
+                    b.color = self.rings[self.k]["color"]  # Solo: Ball nimmt Farbe des nächsten Rings an
                 if self.k == len(self.rings):
                     self.finish_t = self.t
                     self.ev("finish", winner=self.winner())
@@ -319,3 +323,127 @@ class Elimination(Sim):
         ts = [t for t, k, _ in self.events if k == "elim"]
         gaps = [b - a for a, b in zip([0.0] + ts, ts)]
         return dict(finish=self.finish_t, first=ts[0], min_gap=min(gaps[1:]), max_gap=max(gaps))
+
+
+# ------------------------------------------------------------- Ball-Explosion
+
+class Multiply(Sim):
+    """Jeder Ball, der durch die rotierende Lücke entkommt, wird durch 2 neue ersetzt."""
+
+    def __init__(self, seed, gap_deg=24, omega=1.0, target=250, r=10.0):
+        super().__init__(seed)
+        rng = self.rng
+        self.target, self.r = target, r
+        self.th0 = rng.uniform(0, 2 * math.pi)
+        self.om = omega * rng.choice((1, -1))
+        self.half = math.radians(gap_deg) / 2
+        a = rng.uniform(0, 2 * math.pi)
+        self.x, self.y = np.zeros(1), np.zeros(1)
+        self.vx, self.vy = np.array([math.cos(a) * 550]), np.array([math.sin(a) * 550])
+        self.hue = np.array([rng.random()])
+        self.fallen = []  # (t, x, y, vx, vy, hue)
+        self.last_note = -1.0
+        self.last_pop = -1.0
+        self.np_rng = np.random.default_rng(seed)
+
+    def gap(self, t):
+        return self.th0 + self.om * t
+
+    @property
+    def count(self):
+        return len(self.x)
+
+    def step(self, dt):
+        self.vy += self.gravity * dt
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+        d = np.hypot(self.x, self.y) + 1e-6
+        R = ARENA
+        open_ = self.finish_t is None
+        if open_:
+            ang = np.arctan2(self.y, self.x)
+            ingap = np.abs((ang - self.gap(self.t) + np.pi) % (2 * np.pi) - np.pi) < self.half
+            esc = d > R
+        else:
+            ingap = np.zeros(len(d), bool)
+            esc = np.zeros(len(d), bool)
+        hit = ~ingap & ~esc & (d + self.r > R)
+        if hit.any():
+            nx, ny = self.x[hit] / d[hit], self.y[hit] / d[hit]
+            vx, vy = self.vx[hit], self.vy[hit]
+            vn = vx * nx + vy * ny
+            self.x[hit], self.y[hit] = nx * (R - self.r), ny * (R - self.r)
+            out = vn > 0
+            vx = np.where(out, vx - 2 * vn * nx, vx)
+            vy = np.where(out, vy - 2 * vn * ny, vy)
+            sp = np.hypot(vx, vy)
+            vn2 = -(vx * nx + vy * ny)
+            boost = np.where(out & (vn2 < 0.35 * sp), 0.35 * sp - vn2, 0)
+            vx, vy = vx - boost * nx, vy - boost * ny
+            sp = np.hypot(vx, vy) + 1e-6
+            k = np.clip(sp, 480, 900) / sp
+            self.vx[hit], self.vy[hit] = vx * k, vy * k
+            if out.any() and self.t - self.last_note > 0.07:
+                self.last_note = self.t
+                self.ev("note", ball=0)
+        if esc.any():
+            idx = np.nonzero(esc)[0]
+            for i in idx:
+                self.fallen.append((self.t, self.x[i], self.y[i], self.vx[i], self.vy[i], self.hue[i]))
+            keep = ~esc
+            n_new = 2 * len(idx)
+            ang = self.np_rng.uniform(0, 2 * np.pi, n_new)
+            sp = self.np_rng.uniform(450, 620, n_new)
+            self.x = np.concatenate([self.x[keep], self.np_rng.uniform(-20, 20, n_new)])
+            self.y = np.concatenate([self.y[keep], self.np_rng.uniform(-20, 20, n_new)])
+            self.vx = np.concatenate([self.vx[keep], np.cos(ang) * sp])
+            self.vy = np.concatenate([self.vy[keep], np.sin(ang) * sp])
+            self.hue = np.concatenate([self.hue[keep], (np.repeat(self.hue[esc], 2) + 0.07) % 1])
+            if self.t - self.last_pop > 0.05:
+                self.last_pop = self.t
+                self.ev("pop", count=self.count)
+            if self.count >= self.target and self.finish_t is None:
+                self.finish_t = self.t
+                self.ev("finish", count=self.count)
+
+    def snapshot(self):
+        return dict(t=self.t, x=self.x.copy(), y=self.y.copy(), hue=self.hue.copy(), n=self.count,
+                    n_fallen=len(self.fallen))
+
+
+# ------------------------------------------------------------------ String Art
+
+class StringArt(Sim):
+    """Jeder Aufprall setzt einen Punkt am Rand. Von allen Punkten führt eine Linie zum Ball."""
+
+    outro = 5.5
+
+    def __init__(self, seed, target=100, speed=(520, 820)):
+        super().__init__(seed)
+        rng = self.rng
+        a = rng.uniform(0, 2 * math.pi)
+        self.ball = Ball(rng.uniform(-60, 60), rng.uniform(-120, 0), math.cos(a) * 600, math.sin(a) * 600, 14)
+        self.target, self.speed = target, speed
+        self.points = []  # (x, y, hue)
+        self.hue = rng.random()
+
+    def step(self, dt):
+        b = self.ball
+        if self.finish_t is not None:
+            return
+        b.vy += self.gravity * dt
+        b.x += b.vx * dt
+        b.y += b.vy * dt
+        if contain(b, ARENA) == "bounce":
+            d = math.hypot(b.x, b.y) or 1
+            self.hue += 0.011
+            self.points.append((b.x / d * ARENA, b.y / d * ARENA, self.hue))
+            clamp_speed(b, *self.speed)
+            self.note(0, b)
+            if len(self.points) >= self.target:
+                self.finish_t = self.t
+                self.ev("finish", lines=len(self.points))
+
+    def snapshot(self):
+        b = self.ball
+        return dict(t=self.t, x=b.x, y=b.y, n=len(self.points), hue=self.hue)

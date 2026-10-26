@@ -224,6 +224,28 @@ class Scene:
                 paste_center(img, self.crown, px, py - h * 0.72 if self.L["board"] == "row" else py, scale=1)
         return pos
 
+    def progress(self, img, label, pct, col):
+        """Zähler + Fortschrittsbalken im Board-Bereich (unten bzw. rechts)."""
+        d = ImageDraw.Draw(img)
+        pct = max(0.0, min(1.0, pct))
+        x0, x1 = self.L["panel"]
+        if self.L["board"] == "row":
+            y, h = self.L["board_y"] - 22, 44
+            bar = (x0 + 290, y, x1, y + h)
+            label_pos = (x0 + 140, y + h / 2)
+        else:
+            y, h = self.L["board_y"] + 60, 40
+            bar = (x0, y, x1, y + h)
+            label_pos = ((x0 + x1) / 2, y - 50)
+        spr = self.sprite(("lbl", label), label, 40, fill=(255, 255, 255), stroke=6)
+        paste_center(img, spr, *label_pos, scale=min(1.0, 270 / spr.width) if self.L["board"] == "row" else 1.0)
+        d.rounded_rectangle(bar, radius=h // 2, fill=(30, 26, 48), outline=(255, 255, 255), width=3)
+        fw = (bar[2] - bar[0] - 8) * pct
+        if fw > h - 8:
+            d.rounded_rectangle([bar[0] + 4, bar[1] + 4, bar[0] + 4 + fw, bar[3] - 4], radius=(h - 8) // 2, fill=col)
+        d.text(((bar[0] + bar[2]) / 2, (bar[1] + bar[3]) / 2), f"{int(pct * 100)}%", font=font(h * 0.62),
+               fill=(255, 255, 255), anchor="mm", stroke_width=4, stroke_fill=(0, 0, 0))
+
     # ------------------------------------------------------------ Frame
 
     def frame(self, fi):
@@ -335,7 +357,7 @@ class GrowScene(Scene):
                 self.sub(img, t, "GLEICH IST ES SO WEIT!", RED, pulse=True)
             elif 14 < t < 22:
                 self.sub(img, t, "Warte bis zum Ende…")
-        self.progress(img, fr)
+        self.progress(img, f"{fr['bounces']} HITS", fr["pct"], hue_rgb(fr["hue"]))
         if fin is not None and t >= fin:
             self.confetti(img, t, fin)
             self.overlay_winner(img, t, fin + 0.15, "GESCHAFFT!", YELLOW)
@@ -343,31 +365,6 @@ class GrowScene(Scene):
                 s = self.sprite(("cnt", fr["bounces"]), f"{fr['bounces']} AUFPRALLE", 58, fill=(255, 255, 255), stroke=8)
                 paste_center(img, s, self.cx, self.cy + 110, scale=back_out((t - fin - 0.6) / 0.4))
             self.teaser(img, t, fin + sim.outro - 2.7, *self.spec["teaser"])
-
-    def progress(self, img, fr):
-        d = ImageDraw.Draw(img)
-        pct = max(0.0, min(1.0, fr["pct"]))
-        x0, x1 = self.L["panel"]
-        if self.L["board"] == "row":
-            y = self.L["board_y"] - 22
-            h = 44
-            bar = (x0 + 250, y, x1, y + h)
-            label_pos = (x0 + 120, y + h / 2)
-        else:
-            y = self.L["board_y"] + 60
-            h = 40
-            bar = (x0, y, x1, y + h)
-            label_pos = ((x0 + x1) / 2, y - 50)
-        txt = f"{fr['bounces']} HITS"
-        spr = self.sprite(("hits", txt), txt, 40, fill=(255, 255, 255), stroke=6)
-        paste_center(img, spr, *label_pos)
-        d.rounded_rectangle(bar, radius=h // 2, fill=(30, 26, 48), outline=(255, 255, 255), width=3)
-        fw = (bar[2] - bar[0] - 8) * pct
-        if fw > h - 8:
-            d.rounded_rectangle([bar[0] + 4, bar[1] + 4, bar[0] + 4 + fw, bar[3] - 4], radius=(h - 8) // 2, fill=hue_rgb(fr["hue"]))
-        pt = f"{int(pct * 100)}%"
-        d.text(((bar[0] + bar[2]) / 2, (bar[1] + bar[3]) / 2), pt, font=font(h * 0.62), fill=(255, 255, 255),
-               anchor="mm", stroke_width=4, stroke_fill=(0, 0, 0))
 
 
 class ElimScene(Scene):
@@ -423,7 +420,108 @@ class ElimScene(Scene):
             self.teaser(img, t, fin + sim.outro - 2.7, *self.spec["teaser"])
 
 
-SCENES = {"ring": RingScene, "grow": GrowScene, "elim": ElimScene}
+
+class SoloRingScene(RingScene):
+    def draw_ui(self, img, fi, t):
+        sim, fr = self.sim, self.sim.frames[fi]
+        n = len(sim.rings)
+        left = n - fr["k"]
+        fin = sim.finish_t
+        if fin is None or t < fin:
+            if t < 6:
+                self.sub(img, t, "Jede Lücke = 1 Ring kaputt")
+            elif left == 1:
+                self.sub(img, t, "LETZTER RING!", RED, pulse=True)
+            elif left <= 3:
+                self.sub(img, t, f"NUR NOCH {left} RINGE!", RED, pulse=True)
+            elif 14 < t < 21:
+                self.sub(img, t, "Warte bis zum Ende…")
+            else:
+                self.sub(img, t, f"NOCH {left} RINGE")
+        col = fr["balls"][0][4]
+        self.progress(img, f"RING {fr['k']}/{n}", fr["k"] / n, col)
+        if fin is not None and t >= fin:
+            self.confetti(img, t, fin)
+            self.overlay_winner(img, t, fin, "BEFREIT!", YELLOW)
+            self.teaser(img, t, fin + sim.outro - 2.7, *self.spec["teaser"])
+
+
+class MultiplyScene(Scene):
+    def draw_geo(self, d, fi, t):
+        sim, fr = self.sim, self.sim.frames[fi]
+        R = ARENA * self.s + 8
+        if sim.finish_t is None or t < sim.finish_t:
+            g = sim.gap(t)
+            a0, a1 = math.degrees(g + sim.half), math.degrees(g - sim.half) + 360
+            d.arc([self.cx - R, self.cy - R, self.cx + R, self.cy + R], a0, a1, fill=(120, 230, 255), width=max(8, int(10 * self.s)))
+        else:
+            d.ellipse([self.cx - R, self.cy - R, self.cx + R, self.cy + R], outline=(255, 215, 30), width=max(8, int(10 * self.s)))
+        rr = sim.r * self.s
+        for (t0, x, y, vx, vy, h) in sim.fallen[: fr["n_fallen"]]:  # rausgeflogene Bälle fallen weg
+            age = t - t0
+            if age > 1.6:
+                continue
+            X, Y = self.P(x + vx * age, y + vy * age + 0.5 * sim.gravity * age ** 2)
+            col = tuple(int(c * (1 - age / 1.6) * 0.7) for c in hue_rgb(h))
+            d.ellipse([X - rr, Y - rr, X + rr, Y + rr], fill=col)
+        for x, y, h in zip(fr["x"], fr["y"], fr["hue"]):
+            X, Y = self.P(x, y)
+            d.ellipse([X - rr, Y - rr, X + rr, Y + rr], fill=hue_rgb(h), outline=(255, 255, 255), width=2)
+
+    def draw_ui(self, img, fi, t):
+        sim, fr = self.sim, self.sim.frames[fi]
+        fin = sim.finish_t
+        if fin is None or t < fin:
+            if t < 6:
+                self.sub(img, t, "Jeder Ausbruch = 2 neue Bälle!")
+            elif fr["n"] >= sim.target * 0.7:
+                self.sub(img, t, f"GLEICH {sim.target}!", RED, pulse=True)
+            elif 10 < t < 18:
+                self.sub(img, t, "Wie lange dauert es? Schätz mal!")
+            else:
+                self.sub(img, t, f"{fr['n']} BÄLLE")
+        self.progress(img, f"{fr['n']} BÄLLE", fr["n"] / sim.target, hue_rgb(t * 0.05))
+        if fin is not None and t >= fin:
+            self.confetti(img, t, fin)
+            self.overlay_winner(img, t, fin, f"{sim.target} BÄLLE!", YELLOW)
+            self.teaser(img, t, fin + sim.outro - 2.7, *self.spec["teaser"])
+
+
+class StringScene(Scene):
+    def draw_geo(self, d, fi, t):
+        sim, fr = self.sim, self.sim.frames[fi]
+        R = ARENA * self.s + 4
+        d.ellipse([self.cx - R, self.cy - R, self.cx + R, self.cy + R], outline=(200, 200, 230), width=max(4, int(5 * self.s)))
+        X, Y = self.P(fr["x"], fr["y"])
+        w = 2 if fr["n"] > 40 else 3
+        for (px, py, h) in sim.points[: fr["n"]]:
+            Px, Py = self.P(px, py)
+            d.line([Px, Py, X, Y], fill=hue_rgb(h, 0.8, 0.85), width=w)
+        for (px, py, h) in sim.points[: fr["n"]]:
+            Px, Py = self.P(px, py)
+            d.ellipse([Px - 6, Py - 6, Px + 6, Py + 6], fill=hue_rgb(h))
+        r = sim.ball.r * self.s
+        d.ellipse([X - r, Y - r, X + r, Y + r], fill=(255, 255, 255), outline=hue_rgb(fr["hue"]), width=4)
+
+    def draw_ui(self, img, fi, t):
+        sim, fr = self.sim, self.sim.frames[fi]
+        fin = sim.finish_t
+        if fin is None or t < fin:
+            if t < 6:
+                self.sub(img, t, "Jeder Aufprall = 1 neue Linie")
+            elif fr["n"] >= sim.target * 0.85:
+                self.sub(img, t, "FAST FERTIG!", RED, pulse=True)
+            elif 14 < t < 22:
+                self.sub(img, t, "Warte auf das Ergebnis…")
+        self.progress(img, f"{fr['n']} LINIEN", fr["n"] / sim.target, hue_rgb(fr["hue"]))
+        if fin is not None and t >= fin:
+            self.confetti(img, t, fin)
+            self.overlay_winner(img, t, fin, f"{sim.target} LINIEN!", YELLOW)
+            self.teaser(img, t, fin + sim.outro - 2.7, *self.spec["teaser"])
+
+
+SCENES = {"ring": RingScene, "grow": GrowScene, "elim": ElimScene, "solo": SoloRingScene,
+          "multiply": MultiplyScene, "string": StringScene}
 
 
 def render(sim, spec, fmt, out_path, preview_dir=None, preview_times=()):

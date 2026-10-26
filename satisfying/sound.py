@@ -80,6 +80,9 @@ def build(total, events, path, seed=3):
             s = np.zeros(max(len(g), len(m)))
             s[: len(g)] += g
             s[: len(m)] += m
+        elif kind == "pop":
+            s = marimba(melody_note(n_note) * 2) * 0.5
+            n_note += 1
         elif kind == "elim":
             s = whomp()
         elif kind == "finish":

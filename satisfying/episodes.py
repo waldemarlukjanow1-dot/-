@@ -1,4 +1,5 @@
 """Fertig abgestimmte Satisfying-Episoden. Seeds wurden per Suche gewählt (siehe make_satisfying.py --search)."""
+from .flow import FlowSim
 from .sim import Elimination, GrowingBall, Multiply, RingEscape, StringArt
 
 EPISODES = {
@@ -62,5 +63,21 @@ HYPNO = {
         kind="string",
         make=lambda: _outro(StringArt(7, target=200, speed=(1000, 1500), n_balls=2)),
         caption="So hypnotisch 😵‍💫 #satisfying #stringart #ballbounce #fyp #fürdich",
+    ),
+}
+
+
+# Flow-Videos: zufällige Sprungphysik, Muster-Schweife, ruhiges Ende (Renderer: satisfying/flow.py)
+FLOW = {
+    "f01_neon_schwarm": dict(
+        mode="trail", instrument="bell",
+        make=lambda: FlowSim(11, n_start=2, n_max=9, spawn_every=4.5, slow_at=44.0, r=21.0),
+        caption="Welches Muster ist deins? ✨ #satisfying #ballbounce #oddlysatisfying #fyp #fürdich",
+    ),
+    "f02_neon_malerei": dict(
+        mode="paint", instrument="pluck",
+        make=lambda: FlowSim(23, n_start=4, n_max=4, slow_at=45.0, r=13.0, speed=(650, 1150), speedup=0.3,
+                             styles=["ribbon", "dots", "rings", "zigzag"]),
+        caption="Die Bälle malen ein Kunstwerk 🎨 #satisfying #ballbounce #art #fyp #fürdich",
     ),
 }

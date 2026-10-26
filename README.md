@@ -1,5 +1,25 @@
 # TikTok-Video-Generator
 
+## Flow-Ball-Bounce (neueste)
+
+Kein Text, Kreis exakt mittig, Neonfarben. Jeder Ball zieht ein eigenes Muster (Regenbogenband, Punkte,
+Wellenringe, DNA-Helix, Zickzack, Sterne, Quadrate, Perlen). Zufällige Sprungphysik: eigene Schwerkraft
+je Ball, zufällige Ablenkung bei jedem Aufprall, Bälle stoßen sich gegenseitig. Kein Feuerwerk: am Ende
+werden die Bälle langsamer und bleiben unten liegen. Töne: Glockenspiel (E-Dur) bzw. Kalimba (d-Moll),
+Lautstärke je nach Aufprallstärke, leiser Klangteppich.
+
+```
+python3 make_satisfying.py                       # f01 + f02, Hoch- + Querformat
+python3 make_satisfying.py f02_neon_malerei -f vertical
+```
+
+| Video | Inhalt |
+|---|---|
+| `f01_neon_schwarm` | Start mit 2 Bällen, alle 4,5 s kommt einer mit neuem Muster dazu (bis 9) |
+| `f02_neon_malerei` | 4 Bälle malen leuchtende Muster auf eine langsam verblassende Leinwand, Tempo steigt leicht an |
+
+Code: `satisfying/flow.py` (Physik, Muster, Klang, Rendering).
+
 ## Hypnose-Ball-Bounce (aktuell)
 
 Kein Text, nur das System. Tempo ab Sekunde 1, starke Aufprall-Effekte, Finale mit Knall, kurzer Ausklang für den Loop.

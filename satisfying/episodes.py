@@ -39,3 +39,28 @@ EPISODES = {
         caption="Hättest du gedacht, dass er es schafft? 😮 #ballbounce #satisfying #fyp #fürdich",
     ),
 }
+
+
+def _outro(sim, sec=1.8):
+    sim.outro = sec
+    return sim
+
+
+# Hypnose-Versionen: kein Text, schnelleres Tempo, starke Effekte (Renderer: satisfying/hypno.py)
+HYPNO = {
+    "h01_ring_escape": dict(
+        kind="ring",
+        make=lambda: _outro(RingEscape(35, names=("WEISS",), n_rings=50, r_in=60, gap_deg=65, speed=(900, 1300), jitter=0.35)),
+        caption="Bis zum Ende schauen 🌀 #satisfying #ballbounce #oddlysatisfying #fyp #fürdich",
+    ),
+    "h02_ball_explosion": dict(
+        kind="multiply",
+        make=lambda: _outro(Multiply(8, gap_deg=32, n0=6, target=1000, speed=(700, 1100), r=7)),
+        caption="Warte aufs Ende 🤯 #satisfying #ballbounce #simulation #fyp #fürdich",
+    ),
+    "h03_string_art": dict(
+        kind="string",
+        make=lambda: _outro(StringArt(7, target=200, speed=(1000, 1500), n_balls=2)),
+        caption="So hypnotisch 😵‍💫 #satisfying #stringart #ballbounce #fyp #fürdich",
+    ),
+}

@@ -494,10 +494,10 @@ class StringScene(Scene):
         d.ellipse([self.cx - R, self.cy - R, self.cx + R, self.cy + R], outline=(200, 200, 230), width=max(4, int(5 * self.s)))
         X, Y = self.P(fr["x"], fr["y"])
         w = 2 if fr["n"] > 40 else 3
-        for (px, py, h) in sim.points[: fr["n"]]:
+        for (px, py, h, _) in sim.points[: fr["n"]]:
             Px, Py = self.P(px, py)
             d.line([Px, Py, X, Y], fill=hue_rgb(h, 0.8, 0.85), width=w)
-        for (px, py, h) in sim.points[: fr["n"]]:
+        for (px, py, h, _) in sim.points[: fr["n"]]:
             Px, Py = self.P(px, py)
             d.ellipse([Px - 6, Py - 6, Px + 6, Py + 6], fill=hue_rgb(h))
         r = sim.ball.r * self.s

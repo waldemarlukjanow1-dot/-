@@ -9,7 +9,8 @@ import argparse
 import os
 from multiprocessing import Pool
 
-from satisfying.episodes import EPISODES
+from satisfying import hypno
+from satisfying.episodes import EPISODES, HYPNO
 from satisfying.scene import LAYOUTS, render
 from satisfying.sim import Elimination, RingEscape
 
@@ -18,16 +19,17 @@ OUT = "output"
 
 def job(args):
     name, fmt, preview = args
-    spec = dict(EPISODES[name], id=name)
+    spec = dict({**EPISODES, **HYPNO}[name], id=name)
+    rend = hypno.render if name in HYPNO else render
     sim = spec["make"]().run()
     total = sim.total
     if preview:
         f = sim.finish_t
-        times = [0.0, 3.0, 12.0, total * 0.45, total * 0.7, f - 1.5, f + 0.8, f + 2.5, total - 0.5]
-        render(sim, spec, fmt, None, preview_dir=os.path.join(OUT, "preview"), preview_times=times)
+        times = [0.0, 3.0, 12.0, total * 0.45, total * 0.7, f - 1.5, f + 0.1, f + 0.6, total - 0.1]
+        rend(sim, spec, fmt, None, preview_dir=os.path.join(OUT, "preview"), preview_times=times)
         return f"{name} [{fmt}] Vorschau ({total:.1f}s)"
     out = os.path.join(OUT, f"{name}_{fmt}.mp4")
-    render(sim, spec, fmt, out)
+    rend(sim, spec, fmt, out)
     return f"{out} ({total:.1f}s)"
 
 
@@ -45,7 +47,7 @@ def search(kind, n=400):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("episodes", nargs="*", default=list(EPISODES))
+    ap.add_argument("episodes", nargs="*", default=list(HYPNO))
     ap.add_argument("-f", "--format", choices=[*LAYOUTS, "all"], default="all")
     ap.add_argument("--preview", action="store_true")
     ap.add_argument("--search", choices=["ring", "elim"])

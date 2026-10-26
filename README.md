@@ -1,5 +1,25 @@
 # TikTok-Video-Generator
 
+## Hypnose-Ball-Bounce (aktuell)
+
+Kein Text, nur das System. Tempo ab Sekunde 1, starke Aufprall-Effekte, Finale mit Knall, kurzer Ausklang für den Loop.
+
+```
+python3 make_satisfying.py                    # die 3 Hypnose-Videos, Hoch- + Querformat
+python3 make_satisfying.py h01_ring_escape -f vertical
+python3 make_satisfying.py h01_ring_escape --preview
+```
+
+| Video | Inhalt |
+|---|---|
+| `h01_ring_escape` | 1 Ball zerschlägt 50 rotierende Regenbogen-Ringe (max. 4 s ohne Bruch), Finale-Explosion |
+| `h02_ball_explosion` | 6 Bälle → jeder Ausbruch wird zu 2 neuen → 1000 Bälle, dann explodiert alles nach außen |
+| `h03_string_art` | 2 Bälle spannen 200 Neon-Linien, die mit den Bällen mitwandern |
+
+Effekte (`satisfying/hypno.py`): Schockwelle + Funkenstreifen + aufleuchtende Wand bei jedem Aufprall,
+Komet-Schweif, Ring bricht mit Weißblitz, Splittern mit Schweif, großer Schockwelle und Kamera-Ruck,
+Finale mit Blitz, mehreren Schockwellen und Riser-Sound davor.
+
 ## Satisfying-Simulationen (aktuelle Nische)
 
 Neon-Physiksimulationen mit Tönen bei jedem Aufprall, 52–55 s, fertig zum Hochladen.

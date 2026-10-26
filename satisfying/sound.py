@@ -3,7 +3,7 @@ import wave
 
 import numpy as np
 
-from tiktok.audio import whoosh
+from tiktok.audio import hit, riser, whoosh
 
 SR = 44100
 
@@ -77,9 +77,11 @@ def build(total, events, path, seed=3):
             n_note += 1
         elif kind == "break":
             g, m = glass(rng), marimba(melody_note(n_note) * 2) * 0.6
-            s = np.zeros(max(len(g), len(m)))
+            b = hit(rng) * 0.35
+            s = np.zeros(max(len(g), len(m), len(b)))
             s[: len(g)] += g
             s[: len(m)] += m
+            s[: len(b)] += b
         elif kind == "pop":
             s = marimba(melody_note(n_note) * 2) * 0.5
             n_note += 1
@@ -87,11 +89,18 @@ def build(total, events, path, seed=3):
             s = whomp()
         elif kind == "finish":
             s = fanfare()
+        elif kind == "boom":
+            s = hit(rng) * 1.2
+        elif kind == "riser":
+            s = riser(rng, 2.5) * 0.8
+            t = t - len(s) / SR  # endet genau am Finale
         elif kind == "whoosh":
             s = whoosh(rng) * 0.6
         else:
             continue
         i = int(t * SR)
+        if i < 0:
+            s, i = s[-i:], 0
         j = min(len(mix), i + len(s))
         mix[i:j] += s[: j - i]
     mix = mix[: int(SR * total)]

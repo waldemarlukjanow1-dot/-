@@ -107,6 +107,11 @@ class Sim:
         self.events = []
         self.frames = []
         self.finish_t = None
+        self.hits = []  # (t, x, y, farbe) Aufprallpunkte an der Wand -> Effekte
+
+    def hit(self, x, y, R, col):
+        d = math.hypot(x, y) or 1.0
+        self.hits.append((self.t, x / d * R, y / d * R, col))
 
     def ev(self, kind, **data):
         self.events.append((self.t, kind, data))
@@ -138,8 +143,9 @@ class Sim:
 class RingEscape(Sim):
     """Farbkugeln in vielen rotierenden Ringen. Wer durch eine Lücke fliegt, zerschlägt den Ring."""
 
-    def __init__(self, seed, names=("ROT", "BLAU", "GRÜN", "GELB"), n_rings=22, r_in=105, gap_deg=34):
+    def __init__(self, seed, names=("ROT", "BLAU", "GRÜN", "GELB"), n_rings=22, r_in=105, gap_deg=34, speed=(520, 900), jitter=0.0):
         super().__init__(seed)
+        self.speed, self.jitter = speed, jitter
         rng = self.rng
         self.rings = []
         for k in range(n_rings):
@@ -171,8 +177,13 @@ class RingEscape(Sim):
             ring = self.rings[self.k]
             res = contain(b, ring["R"], self.gap(ring, self.t), ring["half"])
             if res == "bounce":
-                clamp_speed(b, 520, 900)
+                if self.jitter:  # Zufallsdreh gegen monotones Auf-und-ab
+                    a = self.rng.uniform(-self.jitter, self.jitter)
+                    c, sn = math.cos(a), math.sin(a)
+                    b.vx, b.vy = b.vx * c - b.vy * sn, b.vx * sn + b.vy * c
+                clamp_speed(b, *self.speed)
                 self.note(i, b)
+                self.hit(b.x, b.y, ring["R"], b.color)
             elif res == "escape":
                 ring["alive"] = False
                 self.score[i] += 1
@@ -330,17 +341,19 @@ class Elimination(Sim):
 class Multiply(Sim):
     """Jeder Ball, der durch die rotierende Lücke entkommt, wird durch 2 neue ersetzt."""
 
-    def __init__(self, seed, gap_deg=24, omega=1.0, target=250, r=10.0):
+    def __init__(self, seed, gap_deg=24, omega=1.0, target=250, r=10.0, n0=1, speed=(480, 900)):
         super().__init__(seed)
         rng = self.rng
         self.target, self.r = target, r
         self.th0 = rng.uniform(0, 2 * math.pi)
         self.om = omega * rng.choice((1, -1))
         self.half = math.radians(gap_deg) / 2
-        a = rng.uniform(0, 2 * math.pi)
-        self.x, self.y = np.zeros(1), np.zeros(1)
-        self.vx, self.vy = np.array([math.cos(a) * 550]), np.array([math.sin(a) * 550])
-        self.hue = np.array([rng.random()])
+        self.speed = speed
+        a = np.array([rng.uniform(0, 2 * math.pi) for _ in range(n0)])
+        self.x, self.y = np.cos(a) * 60, np.sin(a) * 60
+        self.vx, self.vy = np.cos(a + 1.3) * 600, np.sin(a + 1.3) * 600
+        h0 = rng.random()
+        self.hue = (h0 + np.arange(n0) / max(n0, 1) * 0.5) % 1
         self.fallen = []  # (t, x, y, vx, vy, hue)
         self.last_note = -1.0
         self.last_pop = -1.0
@@ -381,8 +394,11 @@ class Multiply(Sim):
             boost = np.where(out & (vn2 < 0.35 * sp), 0.35 * sp - vn2, 0)
             vx, vy = vx - boost * nx, vy - boost * ny
             sp = np.hypot(vx, vy) + 1e-6
-            k = np.clip(sp, 480, 900) / sp
+            k = np.clip(sp, *self.speed) / sp
             self.vx[hit], self.vy[hit] = vx * k, vy * k
+            hx, hy, hh = nx[out], ny[out], self.hue[hit][out]
+            for j in range(min(len(hx), 3)):
+                self.hits.append((self.t, hx[j] * R, hy[j] * R, hue_rgb(hh[j])))
             if out.any() and self.t - self.last_note > 0.07:
                 self.last_note = self.t
                 self.ev("note", ball=0)
@@ -414,36 +430,43 @@ class Multiply(Sim):
 # ------------------------------------------------------------------ String Art
 
 class StringArt(Sim):
-    """Jeder Aufprall setzt einen Punkt am Rand. Von allen Punkten führt eine Linie zum Ball."""
+    """Jeder Aufprall setzt einen Punkt am Rand. Von allen Punkten eines Balls führt eine Linie zu ihm."""
 
     outro = 5.5
 
-    def __init__(self, seed, target=100, speed=(520, 820)):
+    def __init__(self, seed, target=100, speed=(520, 820), n_balls=1):
         super().__init__(seed)
         rng = self.rng
-        a = rng.uniform(0, 2 * math.pi)
-        self.ball = Ball(rng.uniform(-60, 60), rng.uniform(-120, 0), math.cos(a) * 600, math.sin(a) * 600, 14)
+        self.balls = []
+        for i in range(n_balls):
+            a = rng.uniform(0, 2 * math.pi)
+            self.balls.append(Ball(rng.uniform(-60, 60), rng.uniform(-120, 0), math.cos(a) * 600, math.sin(a) * 600, 14))
+        self.ball = self.balls[0]
         self.target, self.speed = target, speed
-        self.points = []  # (x, y, hue)
+        self.points = []  # (x, y, hue, ball)
         self.hue = rng.random()
 
     def step(self, dt):
-        b = self.ball
         if self.finish_t is not None:
             return
-        b.vy += self.gravity * dt
-        b.x += b.vx * dt
-        b.y += b.vy * dt
-        if contain(b, ARENA) == "bounce":
-            d = math.hypot(b.x, b.y) or 1
-            self.hue += 0.011
-            self.points.append((b.x / d * ARENA, b.y / d * ARENA, self.hue))
-            clamp_speed(b, *self.speed)
-            self.note(0, b)
-            if len(self.points) >= self.target:
-                self.finish_t = self.t
-                self.ev("finish", lines=len(self.points))
+        for b in self.balls:
+            b.vy += self.gravity * dt
+            b.x += b.vx * dt
+            b.y += b.vy * dt
+        collide_pairs(self.balls)
+        for i, b in enumerate(self.balls):
+            if contain(b, ARENA) == "bounce":
+                d = math.hypot(b.x, b.y) or 1
+                self.hue += 0.006
+                h = self.hue + i * 0.5
+                self.points.append((b.x / d * ARENA, b.y / d * ARENA, h, i))
+                clamp_speed(b, *self.speed)
+                self.note(i, b)
+                self.hit(b.x, b.y, ARENA, hue_rgb(h))
+                if len(self.points) >= self.target and self.finish_t is None:
+                    self.finish_t = self.t
+                    self.ev("finish", lines=len(self.points))
 
     def snapshot(self):
-        b = self.ball
-        return dict(t=self.t, x=b.x, y=b.y, n=len(self.points), hue=self.hue)
+        return dict(t=self.t, balls=[(b.x, b.y) for b in self.balls], n=len(self.points), hue=self.hue,
+                    x=self.ball.x, y=self.ball.y)

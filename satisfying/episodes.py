@@ -2,6 +2,7 @@
 from .flow import FlowSim
 from .maze import MazeSim
 from .marble import MarbleSim
+from .orbit import OrbitSim
 from .sim import Elimination, GrowingBall, Multiply, RingEscape, StringArt
 
 EPISODES = {
@@ -99,5 +100,14 @@ MARBLE = {
     "r01_murmelbahn": dict(
         make=lambda: MarbleSim(256, outro=7.0),
         caption="Schaffen es alle drei ins Ziel? 🥹 #satisfying #marblerun #ballbounce #asmr #fyp #fürdich",
+    ),
+}
+
+
+# Kreis-Kette: Ball-Bounce mit System – Leuchtpunkte füllen, Kreis öffnet sich, Bälle verdoppeln sich (orbit.py)
+ORBIT = {
+    "o01_kreis_kette": dict(
+        make=lambda: OrbitSim(12),
+        caption="Jeder Kreis verdoppelt die Bälle 🔵➡️🔵🔵 #satisfying #ballbounce #oddlysatisfying #asmr #fyp #fürdich",
     ),
 }

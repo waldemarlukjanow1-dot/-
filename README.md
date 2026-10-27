@@ -1,5 +1,20 @@
 # TikTok-Video-Generator
 
+## Kreis-Kette (neueste) – Ball-Bounce mit System
+
+`o01_kreis_kette` – 60 fps, Kreise mittig untereinander, schwingen sanft mit. Jeder Aufprall lässt einen
+Leuchtpunkt am Kreis aufleuchten (Celesta-Ton steigt die Akkordtöne hoch). Sind alle Punkte an, öffnet sich
+der Kreis unten – jedes Mal anders (Schiebetüren, Blütenblätter, Falltür, Iris). Die Bälle fallen durch die
+obere Öffnung in den nächsten Kreis und verdoppeln sich: 1 → 2 → 4 → 8 → 16. Punkte je Kreis 12/20/32/48/64,
+Akkorde C → Am → F → G → C. Im letzten Kreis kommen alle 16 Bälle zur Ruhe.
+
+```
+python3 make_satisfying.py o01_kreis_kette            # finales Video
+python3 make_satisfying.py o01_kreis_kette --preview  # Standbilder
+```
+
+Code: `satisfying/orbit.py`.
+
 ## Große Murmelbahn (neueste, höchste Qualität)
 
 `r01_murmelbahn` – 60 fps, 2x Supersampling, ruhige Kamerafahrt mit Rückzoom auf die ganze Bahn.

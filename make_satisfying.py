@@ -9,8 +9,8 @@ import argparse
 import os
 from multiprocessing import Pool
 
-from satisfying import flow, hypno, marble_render, maze
-from satisfying.episodes import EPISODES, FLOW, HYPNO, MARBLE, MAZE
+from satisfying import flow, hypno, marble_render, maze, orbit
+from satisfying.episodes import EPISODES, FLOW, HYPNO, MARBLE, MAZE, ORBIT
 from satisfying.scene import LAYOUTS, render
 from satisfying.sim import Elimination, RingEscape
 
@@ -47,7 +47,7 @@ def search(kind, n=400):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("episodes", nargs="*", default=list(MARBLE))
+    ap.add_argument("episodes", nargs="*", default=list(ORBIT))
     ap.add_argument("-f", "--format", choices=[*LAYOUTS, "all"], default="all")
     ap.add_argument("--preview", action="store_true")
     ap.add_argument("--search", choices=["ring", "elim"])
@@ -55,6 +55,19 @@ def main():
     a = ap.parse_args()
     if a.search:
         return search(a.search)
+    for name in [n for n in a.episodes if n in ORBIT]:  # eigener Prozess-Pool, nur Hochformat
+        spec = dict(ORBIT[name], id=name)
+        sim = spec["make"]().run()
+        os.makedirs(OUT, exist_ok=True)
+        if a.preview:
+            ts = sorted({0.0, 4.0, 8.0} | {round(t + dt_, 1) for t, k, _ in sim.events if k in ("open", "calm") for dt_ in (0.6, 2.5)}
+                        | {round(sim.t - 0.1, 1)})
+            orbit.render(sim, spec, None, preview_dir=os.path.join(OUT, "preview"), preview_times=ts)
+            print(f"{name} Vorschau ({sim.t:.1f}s)")
+        else:
+            out = os.path.join(OUT, f"{name}_vertical.mp4")
+            orbit.render(sim, spec, out, jobs=a.jobs)
+            print(f"{out} ({sim.t:.1f}s)")
     for name in [n for n in a.episodes if n in MARBLE]:  # eigener Prozess-Pool, nur Hochformat
         spec = dict(MARBLE[name], id=name)
         sim = spec["make"]().run()
@@ -68,7 +81,7 @@ def main():
             out = os.path.join(OUT, f"{name}_vertical.mp4")
             marble_render.render(sim, spec, "vertical", out, jobs=a.jobs)
             print(f"{out} ({sim.t:.1f}s)")
-    a.episodes = [n for n in a.episodes if n not in MARBLE]
+    a.episodes = [n for n in a.episodes if n not in MARBLE and n not in ORBIT]
     if not a.episodes:
         return
     fmts = list(LAYOUTS) if a.format == "all" else [a.format]

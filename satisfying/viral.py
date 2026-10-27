@@ -529,6 +529,228 @@ class PongWars2(PongWars):
 VIRAL["x03_pong_wars_sieger"] = lambda: PongWars2(4, p_split=0.08).run()
 
 
+# ------------------------------------------------------------------ Pong Wars – Angriff (klare Schlacht mit Sieger)
+
+def asmr_tap(f, seed=0):
+    """Leises, trockenes Tippen wie eine Glasmurmel auf Holz."""
+    key = ("tap", round(f, 1), seed)
+    if key not in _cache:
+        rng = np.random.default_rng(seed)
+        n = int(SR * 0.25)
+        t = np.arange(n) / SR
+        click = np.convolve(rng.standard_normal(n), np.ones(5) / 5, mode="same") * np.exp(-t * 260)
+        body = np.sin(2 * np.pi * f * t) * np.exp(-t * 28) + 0.3 * np.sin(2 * np.pi * f * 2.7 * t) * np.exp(-t * 60)
+        _cache[key] = (click * 0.6 + body * 0.5) * 0.4
+    return _cache[key]
+
+
+def asmr_pop():
+    n = int(SR * 0.25)
+    t = np.arange(n) / SR
+    f = 420 + 380 * np.exp(-t * 40)
+    return np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-t * 22) * 0.45
+
+
+def asmr_thup():
+    n = int(SR * 0.3)
+    t = np.arange(n) / SR
+    return np.sin(2 * np.pi * (90 + 60 * np.exp(-t * 30)) * t) * np.exp(-t * 16) * 0.6
+
+
+class PongBattle(PongWars):
+    """Hell (Team 0) greift an, Dunkel (Team 1) verteidigt. Neue Bälle nur in festen Wellen aus der eigenen Basis.
+    Eingekesselte Bälle scheiden aus. Wer keine Bälle mehr hat, verliert; der Sieger überflutet den Rest."""
+
+    # (Zeit, neue helle Bälle, neue dunkle Bälle, Biss-Radius hell, Biss-Radius dunkel)
+    WAVES = [(0.0, 1, 1, 0, 0), (5.0, 1, 1, 0, 0), (12.0, 0, 3, 0, 1), (19.0, 3, 0, 1, 0), (27.0, 3, 0, 1, 0),
+             (34.0, 4, 0, 2, 0), (39.0, 3, 0, 3, 0)]
+
+    def __init__(self, seed, speed=520.0, waves=None, grid=30):
+        super().__init__(seed, grid=grid, total=70.0, adds=(), slow_at=99, speed=speed)
+        self.balls = []
+        self.waves = list(waves or self.WAVES)
+        self.dead = {}
+        self.winner, self.win_t = None, None
+        self.area = []
+        self.power = {}
+        self.bites = []
+
+    def spawn(self, team, t, k_in_wave, power=0):
+        g = self.g
+        # Startfeld: eigenes Feld, möglichst nah an der Mitte der eigenen Basis-Wand
+        own = np.argwhere(self.state == team)
+        if len(own) == 0:
+            return
+        home = np.array([g / 2, 0 if team == 0 else g - 1])
+        cj, ci = own[np.argmin(np.hypot(own[:, 0] - home[0], own[:, 1] - home[1]) + 0.001 * np.arange(len(own)))]
+        x, y = (ci + 0.5) * self.cell, (cj + 0.5) * self.cell
+        spread = (k_in_wave - 0.5) * 0.35 if k_in_wave else 0.0
+        a = (0.0 if team == 0 else math.pi) + spread + self.rng.uniform(-0.25, 0.25)
+        self.power[len(self.balls)] = power
+        self.balls.append([x, y, math.cos(a), math.sin(a), team])
+        self.events.append((t, "spawn", {"team": team, "power": power}))
+
+    def run(self):
+        dt_sub = 1 / (FPS * 6)
+        r = self.cell * 0.42
+        g = self.g
+        fi = 0
+        pending = []  # (Zeit, Team, Nr in der Welle) – Bälle einer Welle kommen kurz nacheinander
+        for wt, n0, n1, p0, p1 in self.waves:
+            for k in range(n0):
+                pending.append((wt + 0.35 * k, 0, k, p0))
+            for k in range(n1):
+                pending.append((wt + 0.35 * k, 1, k, p1))
+        pending.sort()
+        while True:
+            t = fi / FPS
+            while pending and pending[0][0] <= t and self.winner is None:
+                _, team, k, pw = pending.pop(0)
+                self.spawn(team, t, k, pw)
+            sp = self.speed
+            if self.win_t is not None:
+                sp *= max(0.0, 1 - (t - self.win_t - 2.0) / 3.5) ** 1.5 if t > self.win_t + 2.0 else 1.0
+            for _ in range(6):
+                for bi, b in enumerate(self.balls):
+                    if bi in self.dead:
+                        continue
+                    b[0] += b[2] * sp * dt_sub
+                    b[1] += b[3] * sp * dt_sub
+                    if b[0] < r and b[2] < 0 or b[0] > self.size - r and b[2] > 0:
+                        b[2] = -b[2]
+                    if b[1] < r and b[3] < 0 or b[1] > self.size - r and b[3] > 0:
+                        b[3] = -b[3]
+                    if self.winner is not None:
+                        continue
+                    for ang in range(0, 360, 45):
+                        ca, sa = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+                        ci, cj = int((b[0] + ca * r) // self.cell), int((b[1] + sa * r) // self.cell)
+                        if 0 <= ci < g and 0 <= cj < g and self.state[cj, ci] != b[4]:
+                            pw = self.power.get(bi, 0)
+                            n_bite = 0
+                            for dj in range(-pw, pw + 1):  # Biss: Raute mit Radius pw
+                                for di in range(-(pw - abs(dj)), pw - abs(dj) + 1):
+                                    yj, xi = cj + dj, ci + di
+                                    if 0 <= yj < g and 0 <= xi < g and self.state[yj, xi] != b[4]:
+                                        self.state[yj, xi] = b[4]
+                                        n_bite += 1
+                            if pw:
+                                self.bites.append((t, ci, cj, pw, b[4]))
+                            if abs(ca) > abs(sa):
+                                b[2] = -b[2]
+                            else:
+                                b[3] = -b[3]
+                            a = self.rng.uniform(-0.06, 0.06)
+                            vx, vy = b[2] * math.cos(a) - b[3] * math.sin(a), b[2] * math.sin(a) + b[3] * math.cos(a)
+                            L = math.hypot(vx, vy)
+                            b[2], b[3] = vx / L, vy / L
+                            self.events.append((t, "flip", {"team": b[4], "row": cj, "bite": n_bite}))
+                            break
+            # Einkesselung: steht ein Ball auf gegnerischem Feld oder hat kaum eigene Felder um sich -> raus
+            if self.winner is None:
+                for bi, b in enumerate(self.balls):
+                    if bi in self.dead:
+                        continue
+                    ci, cj = min(g - 1, int(b[0] // self.cell)), min(g - 1, int(b[1] // self.cell))
+                    nb = self.state[max(0, cj - 1):cj + 2, max(0, ci - 1):ci + 2]
+                    if (nb == b[4]).sum() <= 1 and self.state[cj, ci] != b[4]:  # eingekesselt
+                        self.dead[bi] = t
+                        self.events.append((t, "pop", {"team": b[4]}))
+                # Zusammenbruch: unter 8 % Fläche ploppen die letzten Bälle nacheinander
+                for tm in (0, 1):
+                    frac = float((self.state == tm).mean())
+                    if frac < 0.08 and any(b[4] == tm for b in self.balls):
+                        last_pop = max([tt for tt in self.dead.values()] + [-9])
+                        if t - last_pop > 0.45:
+                            for bi, b in enumerate(self.balls):
+                                if bi not in self.dead and b[4] == tm:
+                                    self.dead[bi] = t
+                                    self.events.append((t, "pop", {"team": tm}))
+                                    break
+                alive = [sum(1 for bi, b in enumerate(self.balls) if bi not in self.dead and b[4] == tm) for tm in (0, 1)]
+                spawned = [any(b[4] == tm for b in self.balls) for tm in (0, 1)]
+                for tm in (0, 1):
+                    if spawned[tm] and alive[tm] == 0 and not any(p[1] == tm for p in pending):
+                        self.winner, self.win_t = 1 - tm, t
+                        ys, xs = np.nonzero(self.state == self.winner)
+                        yy, xx = np.mgrid[0:g, 0:g]
+                        dist = np.hypot(yy - ys.mean(), xx - xs.mean())
+                        self.flood_t = t + 0.3 + dist / dist.max() * 2.2
+                        self.events.append((t, "win", {"winner": self.winner}))
+                        break
+            if self.winner is not None:
+                conv = (self.state != self.winner) & (self.flood_t <= t)
+                if conv.any():
+                    self.state[conv] = self.winner
+                    self.events.append((t, "flood", {"row": int(np.nonzero(conv)[0].mean())}))
+            self.area.append(int((self.state == 0).sum()) / (g * g))
+            self.frames.append((self.state.copy(), [tuple(b) + (self.dead.get(bi),) for bi, b in enumerate(self.balls)],
+                                self.area[-1]))
+            fi += 1
+            if self.win_t is not None and t >= self.win_t + 6.5:
+                break
+            if t > 62:
+                break
+        self.total = len(self.frames) / FPS
+        return self
+
+    def frame(self, fi):
+        img = PongWars2.frame(self, fi)
+        # Biss-Effekt: kurzes helles Aufleuchten der eroberten Raute
+        t = fi / FPS
+        d = ImageDraw.Draw(img)
+        c = self.cell
+        for t0, ci, cj, pw, team in self.bites[-200:]:
+            e = (t - t0) / 0.35
+            if 0 <= e < 1:
+                cx, cy = self.x0 + (ci + 0.5) * c, self.y0 + (cj + 0.5) * c
+                R = (pw + 0.5) * c * (1 + 0.25 * e)
+                col = mix(DAY if team == 0 else NIGHT, (255, 255, 255), 0.6 * (1 - e))
+                d.polygon([(cx, cy - R), (cx + R, cy), (cx, cy + R), (cx - R, cy)], outline=col, width=2)
+        return img
+
+    def audio(self, path):
+        n = int(SR * self.total)
+        out = np.zeros(n + SR * 3)
+        penta = [0, 2, 4, 7, 9]
+        last = -1.0
+
+        def put(t, s, vol):
+            i = int(t * SR)
+            e = min(len(out), i + len(s))
+            if i < e:
+                out[i:e] += s[: e - i] * vol
+
+        for t, kind, d in self.events:
+            if kind == "flip":
+                if t - last < 0.06:
+                    continue
+                last = t
+                semi = penta[d["row"] % 5] + 12 * ((d["row"] // 5) % 2)
+                f = (880.0 if d["team"] == 0 else 660.0) * 2 ** (semi / 12)
+                put(t, asmr_tap(f, seed=d["row"] % 7), 0.45)
+            elif kind == "spawn":
+                put(t, asmr_thup(), 0.5)
+            elif kind == "pop":
+                put(t, asmr_pop(), 0.6)
+            elif kind == "flood":
+                if t - last < 0.05:
+                    continue
+                last = t
+                put(t, asmr_tap(1046.5 * 2 ** (penta[d["row"] % 5] / 12), seed=3), 0.35)
+            elif kind == "win":
+                for j, f in enumerate((261.63, 329.63, 392.0, 523.25)):
+                    put(t + 2.6 + j * 0.15, soft_tone(f), 0.6)
+        out = out[:n]
+        tt = np.arange(n) / SR
+        drone = (np.sin(2 * np.pi * 65.41 * tt) + 0.5 * np.sin(2 * np.pi * 98.0 * tt)) * 0.025 * np.minimum(1, tt / 3)
+        mix_ = out * 0.9 + reverb(out, 0.9) * 0.15 + drone
+        mix_ *= np.clip((self.total - tt) / 1.2, 0, 1)
+        write_wav(mix_, path)
+
+
+VIRAL["x04_pong_angriff"] = lambda: PongBattle(8).run()
+
 if __name__ == "__main__":
     import sys
     names = sys.argv[1:] or list(VIRAL)
@@ -538,7 +760,7 @@ if __name__ == "__main__":
         obj = VIRAL[name]()
         if preview:
             render(obj, name, None, preview_dir="output/preview",
-                   preview_times=[0.0, 0.7, 3.0, 8.0, 15.0, 22.0, 30.0, 38.0, 45.0, 49.5, 50.6, obj.frames_count() / FPS - 0.1])
+                   preview_times=[0.0, 6.0, 12.5, 16.0, 20.0, 27.0, 34.5, 39.5, 43.0, 46.5, 48.0, obj.frames_count() / FPS - 0.1])
             print(name, "Vorschau")
         else:
             out = f"output/{name}_vertical.mp4"

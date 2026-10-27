@@ -1,5 +1,20 @@
 # TikTok-Video-Generator
 
+## Parcours-Ball-Bounce (neueste)
+
+`m01_der_weg_nach_unten`: 3 Bälle arbeiten sich durch 5 Ebenen ins goldene Ziel – wandernder Schlitz,
+Tore die nacheinander öffnen, Stiftfeld mit Randschlitzen, rotierender Balken über engem Schlitz,
+Iris-Öffnung. Keine Schweife, ruhige Effekte; Durchbruch = Ebene leuchtet + E-Piano-Ton (steigt je Ebene),
+Aufprall = Wassertropfen, warmer Klangteppich. Alle Bälle kommen in der Schale zur Ruhe.
+Seed so gewählt, dass die Bälle gestaffelt ankommen (35,8 / 43,5 / 49,1 s).
+
+```
+python3 make_satisfying.py                       # Parcours, Hoch- + Querformat
+python3 make_satisfying.py m01_der_weg_nach_unten --preview
+```
+
+Code: `satisfying/maze.py`.
+
 ## Flow-Ball-Bounce (neueste)
 
 Kein Text, Kreis exakt mittig, Neonfarben. Jeder Ball zieht ein eigenes Muster (Regenbogenband, Punkte,

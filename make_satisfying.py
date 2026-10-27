@@ -9,8 +9,8 @@ import argparse
 import os
 from multiprocessing import Pool
 
-from satisfying import flow, hypno
-from satisfying.episodes import EPISODES, FLOW, HYPNO
+from satisfying import flow, hypno, maze
+from satisfying.episodes import EPISODES, FLOW, HYPNO, MAZE
 from satisfying.scene import LAYOUTS, render
 from satisfying.sim import Elimination, RingEscape
 
@@ -19,8 +19,8 @@ OUT = "output"
 
 def job(args):
     name, fmt, preview = args
-    spec = dict({**EPISODES, **HYPNO, **FLOW}[name], id=name)
-    rend = flow.render if name in FLOW else hypno.render if name in HYPNO else render
+    spec = dict({**EPISODES, **HYPNO, **FLOW, **MAZE}[name], id=name)
+    rend = maze.render if name in MAZE else flow.render if name in FLOW else hypno.render if name in HYPNO else render
     sim = spec["make"]().run()
     total = sim.total
     if preview:
@@ -47,7 +47,7 @@ def search(kind, n=400):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("episodes", nargs="*", default=list(FLOW))
+    ap.add_argument("episodes", nargs="*", default=list(MAZE))
     ap.add_argument("-f", "--format", choices=[*LAYOUTS, "all"], default="all")
     ap.add_argument("--preview", action="store_true")
     ap.add_argument("--search", choices=["ring", "elim"])

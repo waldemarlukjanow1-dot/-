@@ -1,5 +1,6 @@
 """Fertig abgestimmte Satisfying-Episoden. Seeds wurden per Suche gewählt (siehe make_satisfying.py --search)."""
 from .flow import FlowSim
+from .maze import MazeSim
 from .sim import Elimination, GrowingBall, Multiply, RingEscape, StringArt
 
 EPISODES = {
@@ -79,5 +80,14 @@ FLOW = {
         make=lambda: FlowSim(23, n_start=4, n_max=4, slow_at=45.0, r=13.0, speed=(650, 1150), speedup=0.3,
                              styles=["ribbon", "dots", "rings", "zigzag"]),
         caption="Die Bälle malen ein Kunstwerk 🎨 #satisfying #ballbounce #art #fyp #fürdich",
+    ),
+}
+
+
+# Parcours: Bälle müssen sich durch 5 Ebenen mit Schlitzen/Toren/Hindernissen ins Ziel arbeiten (satisfying/maze.py)
+MAZE = {
+    "m01_der_weg_nach_unten": dict(
+        make=lambda: MazeSim(242, gap_k=1.45),
+        caption="Schafft es der letzte Ball? 😮‍💨 #satisfying #ballbounce #marblerun #fyp #fürdich",
     ),
 }

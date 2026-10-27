@@ -193,6 +193,41 @@ def lerp(c0, c1, f):
 class MinimalRenderer:
     def __init__(self, sim, kind):
         self.sim, self.kind = sim, kind
+        self.meows = []
+        if kind == "meow":
+            for t, kk, dd in sim.events:
+                if kk == "note":
+                    self.meows.append((t, 0.42 * (1 / dd["p"]) ** 1.05))
+
+    def draw_cat(self, d, c, r, t):
+        """Katzengesicht als Ball; das Maul öffnet sich, solange das Miau klingt."""
+        X, Y = c
+        fur, dark, pinkn = (255, 160, 70), (40, 25, 20), (255, 140, 170)
+        for sgn in (-1, 1):  # Ohren
+            d.polygon([(X + sgn * r * 0.95, Y - r * 0.25), (X + sgn * r * 0.75, Y - r * 1.35), (X + sgn * r * 0.2, Y - r * 0.85)], fill=fur)
+            d.polygon([(X + sgn * r * 0.78, Y - r * 0.45), (X + sgn * r * 0.68, Y - r * 1.05), (X + sgn * r * 0.36, Y - r * 0.8)], fill=pinkn)
+        d.ellipse([X - r, Y - r, X + r, Y + r], fill=fur)
+        open_ = 0.0
+        for t0, dur in self.meows:
+            if t0 <= t <= t0 + dur:
+                u = (t - t0) / dur
+                open_ = max(open_, math.sin(math.pi * min(1.0, u * 1.15)) ** 0.6)
+        for sgn in (-1, 1):  # Augen (beim Miauen zusammengekniffen)
+            ex, ey = X + sgn * r * 0.38, Y - r * 0.12
+            h = r * (0.22 - 0.16 * open_)
+            d.ellipse([ex - r * 0.16, ey - h, ex + r * 0.16, ey + h], fill=dark)
+            if open_ < 0.5:
+                d.ellipse([ex - r * 0.05, ey - h * 0.6, ex + r * 0.04, ey - h * 0.2], fill=(255, 255, 255))
+        d.polygon([(X - r * 0.1, Y + r * 0.12), (X + r * 0.1, Y + r * 0.12), (X, Y + r * 0.24)], fill=pinkn)
+        if open_ > 0.05:  # Maul
+            mh = r * 0.38 * open_
+            d.ellipse([X - r * 0.2, Y + r * 0.28, X + r * 0.2, Y + r * 0.28 + mh], fill=(120, 30, 40))
+        else:
+            d.line([X - r * 0.18, Y + r * 0.34, X, Y + r * 0.26, X + r * 0.18, Y + r * 0.34], fill=dark, width=max(2, int(r * 0.06)))
+        for sgn in (-1, 1):  # Schnurrhaare
+            for dy in (-0.05, 0.08):
+                d.line([X + sgn * r * 0.3, Y + r * (0.22 + dy), X + sgn * r * 1.15, Y + r * (0.15 + dy * 2.2)], fill=(255, 235, 220),
+                       width=max(1, int(r * 0.035)))
 
     def frame(self, i):
         sim = self.sim
@@ -240,6 +275,11 @@ class MinimalRenderer:
                 r = (sim.ball["r"] + 2) * k  # optisch etwas größer, damit er am Handy gut sichtbar ist
                 X, Y = P(x, y)
                 d.ellipse([X - r, Y - r, X + r, Y + r], fill=(110, 205, 240))
+        elif self.kind == "meow":
+            ring = (255, 175, 205)
+            R = (ARENA + 4) * k
+            d.ellipse([CX * k - R, CY * k - R, CX * k + R, CY * k + R], outline=ring, width=int(7 * k))
+            self.draw_cat(d, P(x, y), sim.ball["r"] * k, (i + 1) / FPS)
         else:
             pink = (232, 150, 255)
             R = (ARENA + 3) * k
@@ -379,7 +419,10 @@ def render(sim, spec, out_path, preview_dir=None, preview_times=(), jobs=4):
             for _, _, pth in parts:
                 f.write(f"file '{pth}'\n")
         wav = os.path.join(tmp, "a.wav")
-        build_audio(sim, wav, octave=spec.get("octave", 12))
+        if spec["kind"] == "meow":
+            build_meow_audio(sim, wav)
+        else:
+            build_audio(sim, wav, octave=spec.get("octave", 12))
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", wav, "-c:v", "copy",
                         "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out_path], check=True)
 
@@ -592,3 +635,110 @@ class MultiplySpiralSim(BaseSim):
             return (b["x"], b["y"], self.k, None)
         return (0.0, 0.0, self.k, (self.X.astype(np.float32).copy(), self.Y.astype(np.float32).copy(),
                                      self.H.astype(np.float32).copy()))
+
+
+# ------------------------------------------------------------------ Miau: synthetische Katze, wird tiefer + langsamer
+
+def meow(p, seed=0):
+    """Synthetisches Miau. p=1: kleine Katze (hoch, kurz) ... p~0.3: tief und gedehnt."""
+    rng = np.random.default_rng(seed)
+    D = 0.42 * (1 / p) ** 1.05
+    n = int(SR * D)
+    u = np.linspace(0, 1, n)
+    # Tonhöhe: steigt, Bogen, fällt am Ende ab + Vibrato
+    f0 = 720 * p * (0.82 + 0.38 * np.sin(np.pi * np.clip(u * 1.1, 0, 1)) ** 0.7 - 0.12 * u ** 3)
+    f0 *= 1 + 0.018 * np.sin(2 * np.pi * 6.0 * u * D)
+    phase = np.cumsum(2 * np.pi * f0 / SR)
+    # Formanten (Hz, Bandbreite, Gewicht): m -> i -> a -> u
+    keys = np.array([0.0, 0.12, 0.35, 0.68, 1.0])
+    F1 = np.array([260, 380, 900, 820, 420]) * p ** 0.45
+    F2 = np.array([1000, 2300, 1550, 1250, 900]) * p ** 0.45
+    F3 = np.array([2500, 3000, 2600, 2500, 2400]) * p ** 0.45
+    g1 = np.interp(u, keys, F1)
+    g2 = np.interp(u, keys, F2)
+    g3 = np.interp(u, keys, F3)
+    nasal = np.interp(u, keys, [1.0, 0.15, 0.0, 0.0, 0.2])
+    out = np.zeros(n)
+    hmax = int(7000 / max(f0.min(), 60))
+    for h in range(1, max(2, hmax)):
+        fh = h * f0
+        amp = (np.exp(-((fh - g1) / 160) ** 2) * 1.0 + np.exp(-((fh - g2) / 220) ** 2) * 0.55
+               + np.exp(-((fh - g3) / 300) ** 2) * 0.25 + 0.02) / h ** 0.3
+        amp *= 1 - 0.7 * nasal * (fh > 500)
+        out += amp * np.sin(h * phase)
+    breath = np.convolve(rng.standard_normal(n), np.ones(14) / 14, mode="same") * 0.025
+    env = np.minimum(u * D / 0.035, 1) * np.minimum((1 - u) * D / 0.12, 1)
+    s = (out + breath) * env
+    return s / (np.max(np.abs(s)) or 1) * 0.6
+
+
+class MeowSim(BaseSim):
+    """Katzen-Ball im Kreis. Die Zeit läuft immer langsamer (Zeitlupe) – passend dazu wird jedes Miau tiefer und
+    gedehnter. Am Ende kommt der Ball zur Ruhe."""
+
+    def __init__(self, seed, active=44.0, r=52.0, s_end=0.33, speed=(820, 980), g=550.0):
+        super().__init__(seed, None)
+        rng = self.rng
+        a = rng.uniform(0, 2 * math.pi)
+        self.ball = dict(x=0.0, y=-120.0, vx=math.cos(a) * 850, vy=math.sin(a) * 850, r=r)
+        self.active, self.s_end, self.speed = active, s_end, speed
+        self.g = g
+
+    def slowmo(self):
+        return 1 - (1 - self.s_end) * min(1.0, self.t / self.active)
+
+    def step(self):
+        if self.calm_t is None and self.t >= self.active:
+            self.calm_t = self.t
+        sm = self.slowmo()
+        b = self.ball
+        dt = DT * sm  # Zeitlupe: Physik läuft langsamer als die Uhr
+        b["vy"] += self.g * dt
+        c = self.calm()
+        if c:
+            f = 1 - (0.3 + 1.8 * c) * dt
+            b["vx"] *= f
+            b["vy"] *= f
+        b["x"] += b["vx"] * dt
+        b["y"] += b["vy"] * dt
+        res, st = self.wall(ARENA, speed=self.speed, jitter=0.3)
+        if res == "bounce" and st > 0.12:
+            self.ev("note", strength=st, p=sm)
+        self.check_rest()
+
+    def check_rest(self):
+        b = self.ball
+        if self.calm_t is not None and self.finish_t is None and self.t > self.calm_t + 4:
+            if math.hypot(b["vx"], b["vy"]) < 15 or self.t > self.calm_t + 9:
+                self.finish_t = self.t
+
+    def snapshot(self):
+        b = self.ball
+        return (b["x"], b["y"], 0, None)
+
+
+def build_meow_audio(sim, path):
+    total = len(sim.frames) / FPS
+    n = int(SR * total)
+    out = np.zeros(n + SR * 4)
+    notes = [(t, d) for t, k, d in sim.events if k == "note"]
+    for j, (t, d) in enumerate(notes):
+        p = d["p"]  # Zeitlupen-Faktor = Tonhöhe/Tempo des Miaus
+        s = meow(p, seed=j) * (0.55 + 0.45 * d["strength"])
+        i = int(t * SR)
+        k = min(len(out), i + len(s))
+        out[i:k] += s[: k - i]
+        thump = np.sin(2 * np.pi * 90 * np.arange(int(SR * 0.12)) / SR) * np.exp(-np.arange(int(SR * 0.12)) / SR * 30) * 0.25
+        out[i:i + len(thump)] += thump[: max(0, min(len(thump), len(out) - i))]
+    out = out[:n]
+    wet = reverb(out, 1.4)
+    mix = out * 0.9 + wet * 0.2
+    mix *= np.clip((total - np.arange(n) / SR) / 1.0, 0, 1)
+    peak = np.max(np.abs(mix)) or 1
+    mix = np.tanh(mix / peak * 1.1) * 0.9
+    st = np.stack([mix, mix], axis=1)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes((st * 32767).astype(np.int16).tobytes())

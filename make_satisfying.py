@@ -47,7 +47,7 @@ def search(kind, n=400):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("episodes", nargs="*", default=["v03_spirale_vermehrung"])
+    ap.add_argument("episodes", nargs="*", default=["v04_miau"])
     ap.add_argument("-f", "--format", choices=[*LAYOUTS, "all"], default="all")
     ap.add_argument("--preview", action="store_true")
     ap.add_argument("--search", choices=["ring", "elim"])

@@ -3,7 +3,7 @@ from .flow import FlowSim
 from .maze import MazeSim
 from .marble import MarbleSim
 from .orbit import OrbitSim
-from .minimal import MeowSim, MultiplySpiralSim, SpiralSim, StringSim
+from .minimal import CatChaosSim, MeowSim, MultiplySpiralSim, SpiralSim, StringSim
 from .sim import Elimination, GrowingBall, Multiply, RingEscape, StringArt
 
 EPISODES = {
@@ -116,6 +116,10 @@ ORBIT = {
 
 # Minimalistische Viral-Formate (minimal.py): jeder Aufprall = nächster Ton einer eigenen Melodie
 MINIMAL = {
+    "v05_katzen_chaos": dict(
+        kind="catchaos", make=lambda: CatChaosSim(16, p_spawn=0.09),
+        caption="Jeder Aufprall = noch eine Katze 😹😹😹 #bouncingball #cat #katze #chaos #satisfying #fyp",
+    ),
     "v04_miau": dict(
         kind="meow", make=lambda: MeowSim(11, g=450.0),
         caption="Jeder Aufprall ein Miau – aber es wird immer tiefer 😹 #bouncingball #cat #katze #satisfying #fyp",

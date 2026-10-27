@@ -49,7 +49,7 @@ class BaseSim:
     def calm(self):
         if self.calm_t is None:
             return 0.0
-        return min(1.0, (self.t - self.calm_t) / 3.5)
+        return min(1.0, max(0.0, (self.t - self.calm_t) / 3.5))
 
     def wall(self, R, gap=None, half=0.0, jitter=0.2, speed=(520, 800), g=1000.0):
         """Ballphysik in einem Kreis mit optionaler Lücke. Rückgabe: 'bounce'(stärke) / 'escape' / None."""
@@ -194,21 +194,37 @@ class MinimalRenderer:
     def __init__(self, sim, kind):
         self.sim, self.kind = sim, kind
         self.meows = []
+        self.cat_meows = sorted((t, dd["cat"], dd["dur"]) for t, kk, dd in sim.events if kk == "meow")
+        self.cat_t = [m[0] for m in self.cat_meows]
         if kind == "meow":
             for t, kk, dd in sim.events:
                 if kk == "note":
                     self.meows.append((t, 0.42 * (1 / dd["p"]) ** 1.05))
 
-    def draw_cat(self, d, c, r, t):
+    def open_cats(self, t):
+        import bisect
+        lo = bisect.bisect_left(self.cat_t, t - 3.0)
+        hi = bisect.bisect_right(self.cat_t, t)
+        out = {}
+        for t0, cat, dur in self.cat_meows[lo:hi]:
+            if t <= t0 + dur:
+                u = (t - t0) / dur
+                out[cat] = max(out.get(cat, 0.0), math.sin(math.pi * min(1.0, u * 1.15)) ** 0.6)
+        return out
+
+    def draw_cat(self, d, c, r, t, fur=(255, 160, 70), open_=None):
         """Katzengesicht als Ball; das Maul öffnet sich, solange das Miau klingt."""
         X, Y = c
-        fur, dark, pinkn = (255, 160, 70), (40, 25, 20), (255, 140, 170)
+        dark, pinkn = (40, 25, 20), (255, 140, 170)
+        if sum(fur) < 250:
+            dark = (230, 220, 120)  # schwarze Katze: helle Augen
         for sgn in (-1, 1):  # Ohren
             d.polygon([(X + sgn * r * 0.95, Y - r * 0.25), (X + sgn * r * 0.75, Y - r * 1.35), (X + sgn * r * 0.2, Y - r * 0.85)], fill=fur)
             d.polygon([(X + sgn * r * 0.78, Y - r * 0.45), (X + sgn * r * 0.68, Y - r * 1.05), (X + sgn * r * 0.36, Y - r * 0.8)], fill=pinkn)
         d.ellipse([X - r, Y - r, X + r, Y + r], fill=fur)
-        open_ = 0.0
-        for t0, dur in self.meows:
+        if open_ is None:
+            open_ = 0.0
+        for t0, dur in ([] if open_ else self.meows):
             if t0 <= t <= t0 + dur:
                 u = (t - t0) / dur
                 open_ = max(open_, math.sin(math.pi * min(1.0, u * 1.15)) ** 0.6)
@@ -275,6 +291,16 @@ class MinimalRenderer:
                 r = (sim.ball["r"] + 2) * k  # optisch etwas größer, damit er am Handy gut sichtbar ist
                 X, Y = P(x, y)
                 d.ellipse([X - r, Y - r, X + r, Y + r], fill=(110, 205, 240))
+        elif self.kind == "catchaos":
+            ring = (255, 175, 205)
+            R = (ARENA + 4) * k
+            d.ellipse([CX * k - R, CY * k - R, CX * k + R, CY * k + R], outline=ring, width=int(7 * k))
+            xs, ys, hs = fr[3]
+            t = (i + 1) / FPS
+            open_cats = self.open_cats(t)
+            for j, (bx, by, h) in enumerate(zip(xs, ys, hs)):
+                self.draw_cat(d, P(float(bx), float(by)), sim.rb * k, t, fur=FURS[int(h) % len(FURS)],
+                              open_=open_cats.get(j, 0.0))
         elif self.kind == "meow":
             ring = (255, 175, 205)
             R = (ARENA + 4) * k
@@ -421,6 +447,8 @@ def render(sim, spec, out_path, preview_dir=None, preview_times=(), jobs=4):
         wav = os.path.join(tmp, "a.wav")
         if spec["kind"] == "meow":
             build_meow_audio(sim, wav)
+        elif spec["kind"] == "catchaos":
+            build_cat_chaos_audio(sim, wav)
         else:
             build_audio(sim, wav, octave=spec.get("octave", 12))
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", wav, "-c:v", "copy",
@@ -599,15 +627,28 @@ class MultiplySpiralSim(BaseSim):
             np.add.at(self.VX, J, rel * nx)
             np.add.at(self.VY, J, rel * ny)
         if not c:  # Energie halten: niemand bleibt liegen, solange das Chaos läuft
-            sp = np.hypot(self.VX, self.VY) + 1e-9
-            k = np.maximum(1.0, 480.0 / sp)
-            self.VX *= k
-            self.VY *= k
+            self.keep_energy()
         # nicht aus dem Kreis schieben lassen
         d = np.hypot(self.X, self.Y) + 1e-9
         o = d > ARENA - self.rb
         self.X[o] *= (ARENA - self.rb) / d[o]
         self.Y[o] *= (ARENA - self.rb) / d[o]
+
+    def keep_energy(self, vmin=480.0):
+        """Zu langsame Bälle auf Mindesttempo bringen; fast stehende bekommen eine neue Zufallsrichtung."""
+        sp = np.hypot(self.VX, self.VY)
+        slow = sp < vmin
+        if not slow.any():
+            return
+        tiny = sp < 30
+        if tiny.any():
+            a = self.np_rng.uniform(0, 2 * np.pi, int(tiny.sum()))
+            self.VX[tiny] = np.cos(a) * vmin
+            self.VY[tiny] = np.sin(a) * vmin
+        m = slow & ~tiny
+        k = vmin / sp[m]
+        self.VX[m] *= k
+        self.VY[m] *= k
 
     def check_rest2(self):
         if self.calm_t is not None and self.finish_t is None and self.t > self.calm_t + 4.0:
@@ -736,6 +777,143 @@ def build_meow_audio(sim, path):
     mix *= np.clip((total - np.arange(n) / SR) / 1.0, 0, 1)
     peak = np.max(np.abs(mix)) or 1
     mix = np.tanh(mix / peak * 1.1) * 0.9
+    st = np.stack([mix, mix], axis=1)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes((st * 32767).astype(np.int16).tobytes())
+
+
+# ------------------------------------------------------------------ Katzen-Chaos: Katzen vermehren sich, alle miauen
+
+FURS = [(255, 160, 70), (170, 170, 180), (250, 245, 235), (60, 55, 60), (240, 200, 140), (200, 120, 60), (120, 110, 115)]
+
+
+class CatChaosSim(MultiplySpiralSim):
+    """Start mit einer Katze. Jeder Aufprall miaut (eigene Stimmlage je Katze) und kann eine neue Katze erzeugen.
+    Ist der Kreis voll, wird alles zur Zeitlupe: die Miaus werden tiefer und langsamer, die Katzen sinken ab."""
+
+    def __init__(self, seed, cap=100, p_spawn=0.11, r_cat=22.0, hold=6.0, slow_end=0.35, max_rate=26.0):
+        super().__init__(seed, n=2, cap=cap, p_spawn=p_spawn, r_ball=r_cat, crazy_hold=hold)
+        rng = self.rng
+        a = rng.uniform(0, 2 * math.pi)
+        self.phase2_t = 0.0
+        self.X, self.Y = np.array([0.0]), np.array([-100.0])
+        self.VX, self.VY = np.array([math.cos(a) * 700]), np.array([math.sin(a) * 700])
+        self.H = np.array([0.0])
+        self.PITCH = np.array([1.0])
+        self.LAST = np.array([-9.0])
+        self.slow_end, self.max_rate = slow_end, max_rate
+        self.meow_times = []
+
+    def slowmo(self):
+        if self.calm_t is None:
+            return 1.0
+        return 1 - (1 - self.slow_end) * min(1.0, max(0.0, (self.t - self.calm_t) / 2.5))
+
+    def step(self):
+        sm = self.slowmo()
+        dt, R, rb = DT * sm, ARENA, self.rb
+        c = self.calm()
+        self.VY += (1000.0 if c else 650.0) * dt
+        if c:
+            f = 1 - (0.2 + 0.9 * c) * dt
+            self.VX *= f
+            self.VY *= f
+        self.X += self.VX * dt
+        self.Y += self.VY * dt
+        d = np.hypot(self.X, self.Y) + 1e-9
+        out = d + rb > R
+        if not out.any():
+            return
+        idx = np.nonzero(out)[0]
+        nx, ny = self.X[idx] / d[idx], self.Y[idx] / d[idx]
+        self.X[idx], self.Y[idx] = nx * (R - rb), ny * (R - rb)
+        vx, vy = self.VX[idx], self.VY[idx]
+        vn = vx * nx + vy * ny
+        hit = vn > 0
+        if not hit.any():
+            return
+        if c:
+            e = 1 - 0.45 * c
+            vx = np.where(hit, vx - (1 + e) * vn * nx, vx)
+            vy = np.where(hit, vy - (1 + e) * vn * ny, vy)
+        else:
+            vx = np.where(hit, vx - 2 * vn * nx, vx)
+            vy = np.where(hit, vy - 2 * vn * ny, vy)
+            a = self.np_rng.uniform(-0.3, 0.3, len(idx))
+            vx, vy = vx * np.cos(a) - vy * np.sin(a), vx * np.sin(a) + vy * np.cos(a)
+            sp = np.hypot(vx, vy) + 1e-9
+            k = np.clip(sp, 560, 820) / sp
+            vx, vy = vx * k, vy * k
+        self.VX[idx], self.VY[idx] = vx, vy
+        hi = idx[hit]
+        st = np.minimum(1.0, vn[hit] / 900)
+        # Miau bei jedem Aufprall (je Katze nicht überlappend, insgesamt begrenzte Dichte)
+        for j, s_ in zip(hi, st):
+            if s_ < (0.02 if c else 0.1):  # im Ausklang miauen auch sanfte Aufpralle (tief + langsam)
+                continue
+            p = float(self.PITCH[j]) * sm
+            dur = 0.42 * (1 / p) ** 1.05
+            if self.t - self.LAST[j] < dur * 0.8:
+                continue
+            recent = [x for x in self.meow_times[-60:] if self.t - x < 1.0]
+            if len(recent) >= self.max_rate * (0.6 if c else 1.0):
+                continue
+            self.LAST[j] = self.t
+            self.meow_times.append(self.t)
+            self.ev("meow", cat=int(j), p=p, dur=dur, strength=float(s_))
+        # Vermehrung
+        if c == 0 and len(self.X) < self.cap:
+            m = self.np_rng.random(len(hi)) < self.p_spawn
+            src = hi[m][: self.cap - len(self.X)]
+            if len(src):
+                L = len(src)
+                bx, by = self.X[src] * 0.9, self.Y[src] * 0.9
+                inx, iny = -bx / (np.hypot(bx, by) + 1e-9), -by / (np.hypot(bx, by) + 1e-9)
+                base = np.arctan2(iny, inx) + self.np_rng.uniform(-0.9, 0.9, L)
+                sp = self.np_rng.uniform(600, 800, L)
+                self.X = np.concatenate([self.X, bx])
+                self.Y = np.concatenate([self.Y, by])
+                self.VX = np.concatenate([self.VX, np.cos(base) * sp])
+                self.VY = np.concatenate([self.VY, np.sin(base) * sp])
+                self.H = np.concatenate([self.H, self.np_rng.integers(0, len(FURS), L).astype(float)])
+                self.PITCH = np.concatenate([self.PITCH, self.np_rng.uniform(0.72, 1.35, L)])
+                self.LAST = np.concatenate([self.LAST, np.full(L, -9.0)])
+                self.ev("spawn", n=len(self.X))
+                if len(self.X) >= self.cap and self.cap_t is None:
+                    self.cap_t = self.t
+                    self.calm_t = self.t + self.crazy_hold
+
+
+    def check_rest2(self):
+        if self.calm_t is not None and self.finish_t is None and self.t > self.calm_t + 5.0:
+            if np.percentile(np.hypot(self.VX, self.VY), 90) < 30 or self.t > self.calm_t + 7.0:
+                self.finish_t = self.t
+
+
+def build_cat_chaos_audio(sim, path):
+    total = len(sim.frames) / FPS
+    n = int(SR * total)
+    out = np.zeros(n + SR * 4)
+    cache = {}
+    for t, kind, d in sim.events:
+        if kind != "meow":
+            continue
+        key = round(d["p"], 2)
+        if key not in cache:
+            cache[key] = meow(key, seed=int(key * 100))
+        s = cache[key] * (0.5 + 0.5 * d["strength"])
+        i = int(t * SR)
+        j = min(len(out), i + len(s))
+        out[i:j] += s[: j - i]
+    out = out[:n]
+    wet = reverb(out, 1.6)
+    mix = out * 0.85 + wet * 0.25
+    mix *= np.clip((total - np.arange(n) / SR) / 1.0, 0, 1)
+    peak = np.max(np.abs(mix)) or 1
+    mix = np.tanh(mix / peak * 1.6) * 0.9
     st = np.stack([mix, mix], axis=1)
     with wave.open(path, "wb") as w:
         w.setnchannels(2)

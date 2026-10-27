@@ -47,7 +47,7 @@ def search(kind, n=400):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("episodes", nargs="*", default=list(MINIMAL))
+    ap.add_argument("episodes", nargs="*", default=["v03_spirale_vermehrung"])
     ap.add_argument("-f", "--format", choices=[*LAYOUTS, "all"], default="all")
     ap.add_argument("--preview", action="store_true")
     ap.add_argument("--search", choices=["ring", "elim"])
@@ -60,7 +60,7 @@ def main():
         sim = spec["make"]().run()
         os.makedirs(OUT, exist_ok=True)
         if a.preview:
-            ts = [0.0, 5.0, 12.0, 20.0, 28.0, 36.0, 42.0, round(sim.t - 3, 1), round(sim.t - 0.1, 1)]
+            ts = [0.0, 5.0, 12.0, 20.0, 26.0, 30.0, 34.0, 38.0, 42.0, 45.0, round(sim.t - 3, 1), round(sim.t - 0.1, 1)]
             minimal.render(sim, spec, None, preview_dir=os.path.join(OUT, "preview"), preview_times=ts)
             print(f"{name} Vorschau ({sim.t:.1f}s)")
         else:

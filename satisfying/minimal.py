@@ -182,6 +182,10 @@ class StringSim(BaseSim):
 
 # ------------------------------------------------------------------ Darstellung
 
+import colorsys as _cs
+HUE_LUT = [tuple(int(v * 255) for v in _cs.hsv_to_rgb(i / 256, 0.65, 1.0)) for i in range(256)]
+
+
 def lerp(c0, c1, f):
     return tuple(int(a + (b - a) * f) for a, b in zip(c0, c1))
 
@@ -200,8 +204,9 @@ class MinimalRenderer:
         def P(x, y):
             return (CX * k + x * k, CY * k + y * k)
 
-        x, y, state = sim.frames[i]
-        if self.kind == "spiral":
+        fr = sim.frames[i]
+        x, y, state = fr[0], fr[1], fr[2]
+        if self.kind in ("spiral", "multiply"):
             n = sim.n
             for ring in range(n):
                 R = sim.radii[ring] * k
@@ -225,9 +230,16 @@ class MinimalRenderer:
                 g = sim.gap(ring, t)
                 a0, a1 = math.degrees(g + sim.half), math.degrees(g - sim.half) + 360
                 d.arc([CX * k - R, CY * k - R, CX * k + R, CY * k + R], a0, a1, fill=col, width=w)
-            r = (sim.ball["r"] + 2) * k  # optisch etwas größer, damit er am Handy gut sichtbar ist
-            X, Y = P(x, y)
-            d.ellipse([X - r, Y - r, X + r, Y + r], fill=(110, 205, 240))
+            if self.kind == "multiply" and fr[3] is not None:
+                xs, ys, hs = fr[3]
+                r = (sim.rb + 0.5) * k
+                for bx, by, h in zip(xs, ys, hs):
+                    X, Y = P(float(bx), float(by))
+                    d.ellipse([X - r, Y - r, X + r, Y + r], fill=HUE_LUT[int(h * 255) % 256])
+            else:
+                r = (sim.ball["r"] + 2) * k  # optisch etwas größer, damit er am Handy gut sichtbar ist
+                X, Y = P(x, y)
+                d.ellipse([X - r, Y - r, X + r, Y + r], fill=(110, 205, 240))
         else:
             pink = (232, 150, 255)
             R = (ARENA + 3) * k
@@ -370,3 +382,213 @@ def render(sim, spec, out_path, preview_dir=None, preview_times=(), jobs=4):
         build_audio(sim, wav, octave=spec.get("octave", 12))
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", wav, "-c:v", "copy",
                         "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out_path], check=True)
+
+
+# ------------------------------------------------------------------ Spirale + Vermehrung
+
+class MultiplySpiralSim(BaseSim):
+    """Phase 1: ein Ball bricht durch dicke Spiral-Ringe. Phase 2: im äußeren Kreis (verschwindet nie) erzeugt
+    jeder Treffer einen neuen Ball – bis der Kreis voller Bälle ist. Danach sinken alle zu einem Haufen."""
+
+    def __init__(self, seed, n=15, r_in=80.0, half_deg=34.0, twist=0.22, omega=1.25, p_spawn=0.45, cap=1000,
+                 r_ball=7.0, crazy_hold=3.0):
+        super().__init__(seed, None)
+        rng = self.rng
+        self.n = n
+        self.radii = [r_in + (ARENA - r_in) * k / (n - 1) for k in range(n)]
+        self.half = math.radians(half_deg)
+        self.twist, self.omega = twist, omega
+        self.th0 = rng.uniform(0, 2 * math.pi)
+        self.k = 0
+        self.broken = []
+        self.p_spawn, self.cap, self.rb, self.crazy_hold = p_spawn, cap, r_ball, crazy_hold
+        a = rng.uniform(0, 2 * math.pi)
+        self.ball = dict(x=0.0, y=-10.0, vx=math.cos(a) * 560, vy=math.sin(a) * 560, r=r_ball)
+        self.np_rng = np.random.default_rng(seed)
+        self.X = self.Y = self.VX = self.VY = self.H = None  # Arrays ab Phase 2
+        self.phase2_t = None
+        self.cap_t = None
+        self.last_note = -1.0
+        self.spawned = 0
+
+    def gap(self, k, t):
+        return self.th0 + self.omega * t + k * self.twist
+
+    def _note(self, strength, minint=0.045):
+        if self.t - self.last_note >= minint:
+            self.last_note = self.t
+            self.ev("note", strength=strength)
+
+    def step(self):
+        if self.phase2_t is None:
+            self.move(1000.0)
+            last = self.n - 1
+            while True:
+                k = self.k
+                res, st = self.wall(self.radii[k], self.gap(k, self.t), self.half, speed=(560, 840))
+                if res == "escape":
+                    self.broken.append((self.t, k))
+                    self.ev("break", ring=k)
+                    self.k += 1
+                    if self.k == last:  # äußerer Kreis erreicht -> Phase 2
+                        b = self.ball
+                        self.phase2_t = self.t
+                        self.X, self.Y = np.array([b["x"]]), np.array([b["y"]])
+                        self.VX, self.VY = np.array([b["vx"]]), np.array([b["vy"]])
+                        self.H = np.array([0.55])
+                        self.ev("phase2")
+                        return
+                    continue
+                if res == "bounce":
+                    self._note(st, 0.0)
+                break
+            return
+        self.step2()
+
+    def step2(self):
+        dt, R, rb = DT, ARENA, self.rb
+        c = self.calm()
+        self.VY += (1000.0 if c else 650.0) * dt  # im Chaos weniger Schwerkraft -> Bälle füllen den ganzen Kreis
+        if c:
+            f = 1 - (0.3 + 2.5 * c) * dt
+            self.VX *= f
+            self.VY *= f
+        self.X += self.VX * dt
+        self.Y += self.VY * dt
+        d = np.hypot(self.X, self.Y) + 1e-9
+        out = d + rb > R
+        if not out.any():
+            return
+        idx = np.nonzero(out)[0]
+        nx, ny = self.X[idx] / d[idx], self.Y[idx] / d[idx]
+        self.X[idx], self.Y[idx] = nx * (R - rb), ny * (R - rb)
+        vx, vy = self.VX[idx], self.VY[idx]
+        vn = vx * nx + vy * ny
+        hit = vn > 0
+        if not hit.any():
+            return
+        if c:
+            e = 1 - 0.75 * c
+            vx = np.where(hit, vx - (1 + e) * vn * nx, vx)
+            vy = np.where(hit, vy - (1 + e) * vn * ny, vy)
+        else:
+            vx = np.where(hit, vx - 2 * vn * nx, vx)
+            vy = np.where(hit, vy - 2 * vn * ny, vy)
+            a = self.np_rng.uniform(-0.25, 0.25, len(idx))
+            vx, vy = vx * np.cos(a) - vy * np.sin(a), vx * np.sin(a) + vy * np.cos(a)
+            sp = np.hypot(vx, vy) + 1e-9
+            k = np.clip(sp, 520, 820) / sp
+            vx, vy = vx * k, vy * k
+        self.VX[idx], self.VY[idx] = vx, vy
+        hi = idx[hit]
+        self._note(float(min(1.0, vn[hit].max() / 900)))
+        # Vermehrung: jeder Treffer kann einen neuen Ball erzeugen
+        if c == 0 and len(self.X) < self.cap:
+            m = self.np_rng.random(len(hi)) < self.p_spawn
+            src = hi[m][: self.cap - len(self.X)]
+            if len(src):
+                ang = self.np_rng.uniform(0, 2 * np.pi, len(src))
+                sp = self.np_rng.uniform(560, 800, len(src))
+                bx = self.X[src] * 0.97
+                by = self.Y[src] * 0.97
+                self.X = np.concatenate([self.X, bx])
+                self.Y = np.concatenate([self.Y, by])
+                # neuer Ball fliegt nach innen weg
+                inx, iny = -bx / (np.hypot(bx, by) + 1e-9), -by / (np.hypot(bx, by) + 1e-9)
+                base = np.arctan2(iny, inx) + self.np_rng.uniform(-0.9, 0.9, len(src))
+                self.VX = np.concatenate([self.VX, np.cos(base) * sp])
+                self.VY = np.concatenate([self.VY, np.sin(base) * sp])
+                h = (0.55 + (self.spawned + np.arange(len(src))) * 0.013) % 1
+                self.spawned += len(src)
+                self.H = np.concatenate([self.H, h])
+                self.ev("spawn", n=len(self.X))
+                if len(self.X) >= self.cap and self.cap_t is None:
+                    self.cap_t = self.t
+                    self.calm_t = self.t + self.crazy_hold
+
+    def collide(self):
+        """Kugel-Kugel-Stöße für viele Bälle (vektorisiert, einmal pro Frame, mehrere Durchläufe)."""
+        if self.X is None or len(self.X) < 2:
+            return
+        rb2 = 2 * self.rb
+        c = self.calm()
+        for _ in range(2 if c else 1):
+            P = np.stack([self.X, self.Y], 1)
+            # Gitter-Sortierung: nur Nachbarn in Zellen vergleichen
+            cell = np.floor((P + 500) / rb2).astype(np.int64)
+            key = cell[:, 0] * 10000 + cell[:, 1]
+            order = np.argsort(key)
+            ks = key[order]
+            pairs_i, pairs_j = [], []
+            for ox in (-1, 0, 1):
+                for oy in (-1, 0, 1):
+                    nk = key + ox * 10000 + oy
+                    lo = np.searchsorted(ks, nk, "left")
+                    hi = np.searchsorted(ks, nk, "right")
+                    cnt = hi - lo
+                    if cnt.max() == 0:
+                        continue
+                    rep = np.repeat(np.arange(len(key)), cnt)
+                    offs = np.concatenate([np.arange(a, b) for a, b in zip(lo, hi) if b > a]) if cnt.sum() else np.array([], int)
+                    j = order[offs]
+                    m = rep < j
+                    pairs_i.append(rep[m])
+                    pairs_j.append(j[m])
+            if not pairs_i:
+                return
+            I, J = np.concatenate(pairs_i), np.concatenate(pairs_j)
+            dx, dy = self.X[J] - self.X[I], self.Y[J] - self.Y[I]
+            dd = np.hypot(dx, dy)
+            m = (dd < rb2) & (dd > 1e-6)
+            if not m.any():
+                return
+            I, J, dx, dy, dd = I[m], J[m], dx[m], dy[m], dd[m]
+            nx, ny = dx / dd, dy / dd
+            ov = (rb2 - dd) / 2
+            np.add.at(self.X, I, -nx * ov)
+            np.add.at(self.Y, I, -ny * ov)
+            np.add.at(self.X, J, nx * ov)
+            np.add.at(self.Y, J, ny * ov)
+            rel = (self.VX[I] - self.VX[J]) * nx + (self.VY[I] - self.VY[J]) * ny
+            rel = np.where(rel > 0, rel, 0) * ((1 + (0.2 if c else 0.9)) / 2)
+            np.add.at(self.VX, I, -rel * nx)
+            np.add.at(self.VY, I, -rel * ny)
+            np.add.at(self.VX, J, rel * nx)
+            np.add.at(self.VY, J, rel * ny)
+        if not c:  # Energie halten: niemand bleibt liegen, solange das Chaos läuft
+            sp = np.hypot(self.VX, self.VY) + 1e-9
+            k = np.maximum(1.0, 480.0 / sp)
+            self.VX *= k
+            self.VY *= k
+        # nicht aus dem Kreis schieben lassen
+        d = np.hypot(self.X, self.Y) + 1e-9
+        o = d > ARENA - self.rb
+        self.X[o] *= (ARENA - self.rb) / d[o]
+        self.Y[o] *= (ARENA - self.rb) / d[o]
+
+    def check_rest2(self):
+        if self.calm_t is not None and self.finish_t is None and self.t > self.calm_t + 4.0:
+            if np.percentile(np.hypot(self.VX, self.VY), 90) < 40 or self.t > self.calm_t + 6.5:
+                self.finish_t = self.t
+
+    def run(self, max_t=70.0):
+        while True:
+            for _ in range(SUB):
+                self.step()
+                self.t += DT
+            self.collide()
+            if self.phase2_t is not None:
+                self.check_rest2()
+            self.frames.append(self.snapshot())
+            if self.finish_t is not None and self.t >= self.finish_t + self.outro:
+                break
+            if self.t > max_t:
+                break
+        return self
+
+    def snapshot(self):
+        if self.phase2_t is None:
+            b = self.ball
+            return (b["x"], b["y"], self.k, None)
+        return (0.0, 0.0, self.k, (self.X.astype(np.float32).copy(), self.Y.astype(np.float32).copy(),
+                                     self.H.astype(np.float32).copy()))

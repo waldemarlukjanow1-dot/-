@@ -1,6 +1,7 @@
 """Fertig abgestimmte Satisfying-Episoden. Seeds wurden per Suche gewählt (siehe make_satisfying.py --search)."""
 from .flow import FlowSim
 from .maze import MazeSim
+from .marble import MarbleSim
 from .sim import Elimination, GrowingBall, Multiply, RingEscape, StringArt
 
 EPISODES = {
@@ -89,5 +90,14 @@ MAZE = {
     "m01_der_weg_nach_unten": dict(
         make=lambda: MazeSim(242, gap_k=1.45),
         caption="Schafft es der letzte Ball? 😮‍💨 #satisfying #ballbounce #marblerun #fyp #fürdich",
+    ),
+}
+
+
+# Große Murmelbahn: Bounce-Kreis -> Bahn mit Speedbändern, Trampolin, Wippe, Looping, Katapult -> Ziel (marble.py)
+MARBLE = {
+    "r01_murmelbahn": dict(
+        make=lambda: MarbleSim(256, outro=7.0),
+        caption="Schaffen es alle drei ins Ziel? 🥹 #satisfying #marblerun #ballbounce #asmr #fyp #fürdich",
     ),
 }

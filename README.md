@@ -1,5 +1,21 @@
 # TikTok-Video-Generator
 
+## Große Murmelbahn (neueste, höchste Qualität)
+
+`r01_murmelbahn` – 60 fps, 2x Supersampling, ruhige Kamerafahrt mit Rückzoom auf die ganze Bahn.
+3 glänzende Kugeln starten im Bounce-Kreis, finden nach wenigen Aufprallen die wandernde Lücke und rollen
+durch: Trichter → Kehre → Schanze → Trampolin → Halfpipe → Wippe → Speedband 1 → Serpentinen →
+Speedband 2 → Looping → Katapult (sammelt alle drei, holt aus, schleudert) → goldene Ziel-Schale.
+Rollen statt Springen: Bahnphysik mit Schwerkraft/Reibung, Sprünge als berechnete Wurfparabeln.
+Klang: Filz-Klavier, Rollgeräusch, Swoosh, Boing, Holz-Tock, Harfe, warmer Pad, Hall.
+
+```
+python3 make_satisfying.py r01_murmelbahn            # finales Video (parallel gerendert)
+python3 make_satisfying.py r01_murmelbahn --preview  # Standbilder
+```
+
+Code: `satisfying/marble.py` (Bahn + Physik), `satisfying/marble_render.py` (Rendering + Klang).
+
 ## Parcours-Ball-Bounce (neueste)
 
 `m01_der_weg_nach_unten`: 3 Bälle arbeiten sich durch 5 Ebenen ins goldene Ziel – wandernder Schlitz,

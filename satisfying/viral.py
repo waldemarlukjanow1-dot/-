@@ -338,6 +338,197 @@ VIRAL = {
     "x02_pong_wars": lambda: PongWars(7).run(),
 }
 
+# ------------------------------------------------------------------ Pong Wars 2: Bälle vermehren sich, es gibt einen Sieger
+
+def soft_tone(f):
+    """Runder, weicher Ton (kaum Obertöne, sanfter Anschlag)."""
+    key = ("soft", round(f, 2))
+    if key not in _cache:
+        n = int(SR * 1.4)
+        t = np.arange(n) / SR
+        s = (np.sin(2 * np.pi * f * t) + 0.12 * np.sin(2 * np.pi * 2 * f * t) * np.exp(-t * 6)) * np.exp(-t * 3.2)
+        _cache[key] = s * np.minimum(t / 0.012, 1) * 0.3
+    return _cache[key]
+
+
+def warm_pad(total, fade_from):
+    n = int(SR * total)
+    t = np.arange(n) / SR
+    chords = [(130.81, 196.0, 261.63, 329.63), (110.0, 164.81, 220.0, 261.63), (87.31, 130.81, 174.61, 220.0),
+              (98.0, 146.83, 196.0, 246.94)]
+    out = np.zeros(n)
+    seg = 6.0
+    for ci in range(int(total / seg) + 2):
+        t0 = ci * seg
+        env = np.clip((t - t0 + 1.5) / 1.5, 0, 1) * np.clip((t0 + seg + 1.5 - t) / 1.5, 0, 1)
+        for k, f in enumerate(chords[ci % 4]):
+            out += env * np.sin(2 * np.pi * f * t + k) / (k + 2)
+    out *= 0.8 + 0.2 * np.sin(2 * np.pi * 0.1 * t)
+    return out * 0.06 * np.minimum(1, t / 2) * np.clip(1 - (t - fade_from) / 8, 0.4, 1)
+
+
+class PongWars2(PongWars):
+    def __init__(self, seed, p_split=0.06, cap=40, decide_at=41.0, flood=3.2, total=50.0, speed=600.0):
+        super().__init__(seed, grid=30, total=total, adds=(), slow_at=decide_at + flood + 1.0, speed=speed)
+        self.p_split, self.cap, self.decide_at, self.flood = p_split, cap, decide_at, flood
+        self.winner = None
+        self.area = []
+        self.gone = {}  # Ball-Index -> Zeitpunkt des Verschwindens
+
+    def run(self):
+        dt_sub = 1 / (FPS * 6)
+        r = self.cell * 0.42
+        n = int(self.total * FPS)
+        g = self.g
+        for fi in range(n):
+            t = fi / FPS
+            sp = self.speed
+            if t > self.slow_at:
+                sp *= max(0.0, 1 - (t - self.slow_at) / 3.5) ** 1.5
+            if t >= self.decide_at and self.winner is None:
+                day = int((self.state == 0).sum())
+                self.winner = 0 if day >= g * g - day else 1
+                self.events.append((t, "decide", {"winner": self.winner}))
+                # Flutwelle: Reihenfolge nach Abstand zum Schwerpunkt des Siegers
+                ys, xs = np.nonzero(self.state == self.winner)
+                cy, cx = ys.mean(), xs.mean()
+                yy, xx = np.mgrid[0:g, 0:g]
+                dist = np.hypot(yy - cy, xx - cx)
+                self.flood_t = self.decide_at + dist / dist.max() * self.flood
+            if self.winner is not None:
+                conv = (self.state != self.winner) & (self.flood_t <= t)
+                if conv.any():
+                    rows = np.nonzero(conv)[0]
+                    self.state[conv] = self.winner
+                    self.events.append((t, "flood", {"n": int(conv.sum()), "row": int(rows.mean())}))
+                for bi, b in enumerate(self.balls):  # Verlierer-Bälle verschwinden, wenn die Welle sie erreicht
+                    if b[4] != self.winner and bi not in self.gone:
+                        ci, cj = min(g - 1, int(b[0] // self.cell)), min(g - 1, int(b[1] // self.cell))
+                        if self.flood_t[cj, ci] <= t:
+                            self.gone[bi] = t
+                            self.events.append((t, "pop", {}))
+            new = []
+            for _ in range(6):
+                for bi, b in enumerate(self.balls):
+                    if bi in self.gone:
+                        continue
+                    b[0] += b[2] * sp * dt_sub
+                    b[1] += b[3] * sp * dt_sub
+                    if b[0] < r and b[2] < 0 or b[0] > self.size - r and b[2] > 0:
+                        b[2] = -b[2]
+                    if b[1] < r and b[3] < 0 or b[1] > self.size - r and b[3] > 0:
+                        b[3] = -b[3]
+                    if self.winner is not None:
+                        continue  # nach der Entscheidung wird nicht mehr erobert
+                    for ang in range(0, 360, 45):
+                        ca, sa = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+                        ci, cj = int((b[0] + ca * r) // self.cell), int((b[1] + sa * r) // self.cell)
+                        if 0 <= ci < g and 0 <= cj < g and self.state[cj, ci] != b[4]:
+                            self.state[cj, ci] = b[4]
+                            if abs(ca) > abs(sa):
+                                b[2] = -b[2]
+                            else:
+                                b[3] = -b[3]
+                            a = self.rng.uniform(-0.1, 0.1)
+                            vx, vy = b[2] * math.cos(a) - b[3] * math.sin(a), b[2] * math.sin(a) + b[3] * math.cos(a)
+                            L = math.hypot(vx, vy)
+                            b[2], b[3] = vx / L, vy / L
+                            self.events.append((t, "flip", {"team": b[4], "row": cj, "col": ci}))
+                            # Treffer -> neuer Ball für dieses Team (Abspaltung in Gegenrichtung)
+                            team_n = sum(1 for x in self.balls + new if x[4] == b[4])
+                            if team_n < self.cap and self.rng.random() < self.p_split:
+                                aa = self.rng.uniform(0, 2 * math.pi)
+                                new.append([b[0], b[1], math.cos(aa), math.sin(aa), b[4]])
+                                self.events.append((t, "split", {"team": b[4]}))
+                            break
+            self.balls += new
+            self.area.append(int((self.state == 0).sum()) / (g * g))
+            self.frames.append((self.state.copy(), [tuple(b) + (self.gone.get(bi),) for bi, b in enumerate(self.balls)],
+                                self.area[-1]))
+        return self
+
+    def lead_changes(self):
+        lead, ch = None, 0
+        for a in self.area[FPS * 3: int(self.decide_at * FPS)]:
+            l = 0 if a > 0.53 else 1 if a < 0.47 else lead
+            if l is not None and lead is not None and l != lead:
+                ch += 1
+            lead = l if l is not None else lead
+        return ch
+
+    def frame(self, fi):
+        k = SS
+        state, balls, area = self.frames[fi]
+        t = fi / FPS
+        img = Image.new("RGB", (W1 * k, H1 * k), (10, 12, 16))
+        lut = np.array([DAY, NIGHT], np.uint8)
+        grid = Image.fromarray(lut[state], "RGB").resize((int(self.size * k), int(self.size * k)), Image.NEAREST)
+        img.paste(grid, (int(self.x0 * k), int(self.y0 * k)))
+        d = ImageDraw.Draw(img)
+        # Kräfte-Balken über dem Feld (ohne Text)
+        bx0, by0 = self.x0 * k, (self.y0 - 46) * k
+        bw, bh = self.size * k, 18 * k
+        d.rounded_rectangle([bx0, by0, bx0 + bw, by0 + bh], radius=bh // 2, fill=NIGHT)
+        d.rounded_rectangle([bx0, by0, bx0 + bw * area, by0 + bh], radius=bh // 2, fill=DAY)
+        d.line([bx0 + bw / 2, by0 - 6 * k, bx0 + bw / 2, by0 + bh + 6 * k], fill=(240, 120, 110), width=2 * k)
+        r = self.cell * 0.42 * k
+        for x, y, vx, vy, team, gone in balls:
+            X, Y = (self.x0 + x) * k, (self.y0 + y) * k
+            col = DAY if team == 1 else NIGHT
+            rr = r
+            if gone is not None:
+                e = (t - gone) / 0.35
+                if e >= 1:
+                    continue
+                rr = r * (1 + 0.8 * e)
+                col = mix(col, lut[team].tolist() and tuple(lut[1 - team]), e)
+            d.ellipse([X - rr, Y - rr, X + rr, Y + rr], fill=col)
+        return img.reduce(SS)
+
+    def audio(self, path):
+        n = int(SR * self.total)
+        out = np.zeros(n + SR * 3)
+        penta = [0, 2, 4, 7, 9]
+        last = -1.0
+
+        def put(t, s, vol):
+            i = int(t * SR)
+            e = min(len(out), i + len(s))
+            if i < e:
+                out[i:e] += s[: e - i] * vol
+
+        for t, kind, d in self.events:
+            if kind == "flip":
+                if t - last < 0.085:  # höchstens ~12 Töne pro Sekunde
+                    continue
+                last = t
+                row = d["row"] % 10
+                semi = 12 * (row // 5) + penta[row % 5]
+                base = 261.63 if d["team"] == 0 else 196.0
+                put(t, soft_tone(base * 2 ** (semi / 12)), 0.5)
+            elif kind == "split":
+                put(t, soft_tone(1046.5 if d["team"] == 0 else 783.99), 0.12)
+            elif kind == "flood":
+                if t - last < 0.06:
+                    continue
+                last = t
+                row = d["row"]
+                put(t, soft_tone(523.25 * 2 ** ((penta[row % 5] + 12 * (row % 2)) / 12)), 0.4)
+            elif kind == "decide":
+                for j, f in enumerate((261.63, 329.63, 392.0, 523.25)):
+                    put(t + j * 0.12, vibes(f), 0.35)
+        win_t = self.decide_at + self.flood
+        for j, f in enumerate((261.63, 329.63, 392.0, 523.25, 659.25)):
+            put(win_t + j * 0.09, vibes(f), 0.4)
+        out = out[:n]
+        mix_ = out * 0.8 + reverb(out, 2.4) * 0.4 + warm_pad(self.total, win_t)
+        mix_ *= np.clip((self.total - np.arange(n) / SR) / 1.2, 0, 1)
+        write_wav(mix_, path)
+
+
+VIRAL["x03_pong_wars_sieger"] = lambda: PongWars2(4, p_split=0.08).run()
+
+
 if __name__ == "__main__":
     import sys
     names = sys.argv[1:] or list(VIRAL)
@@ -353,3 +544,4 @@ if __name__ == "__main__":
             out = f"output/{name}_vertical.mp4"
             render(obj, name, out)
             print(out)
+

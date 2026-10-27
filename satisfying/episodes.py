@@ -3,6 +3,7 @@ from .flow import FlowSim
 from .maze import MazeSim
 from .marble import MarbleSim
 from .orbit import OrbitSim
+from .minimal import SpiralSim, StringSim
 from .sim import Elimination, GrowingBall, Multiply, RingEscape, StringArt
 
 EPISODES = {
@@ -109,5 +110,18 @@ ORBIT = {
     "o01_kreis_kette": dict(
         make=lambda: OrbitSim(12),
         caption="Jeder Kreis verdoppelt die Bälle 🔵➡️🔵🔵 #satisfying #ballbounce #oddlysatisfying #asmr #fyp #fürdich",
+    ),
+}
+
+
+# Minimalistische Viral-Formate (minimal.py): jeder Aufprall = nächster Ton einer eigenen Melodie
+MINIMAL = {
+    "v01_spiral_ringe": dict(
+        kind="spiral", make=lambda: SpiralSim(40, n=60, half_deg=36, twist=0.12, omega=1.2),
+        caption="Schafft er alle 60 Ringe? 🔵 #bouncingball #satisfying #circle #ring #fyp #fürdich",
+    ),
+    "v02_faeden": dict(
+        kind="strings", make=lambda: StringSim(3, speed=(900, 1250)), octave=0,
+        caption="Jeder Aufprall = eine Linie 🎵 #bouncingball #satisfying #circle #fyp #fürdich",
     ),
 }

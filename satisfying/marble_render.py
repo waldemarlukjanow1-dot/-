@@ -283,9 +283,9 @@ class Renderer:
     def ball_img(self, color, z):
         key = (color, round(z, 3))
         if key not in self.ball_spr:
-            self.ball_spr[key] = ball_sprite(color, M.R_BALL * z)
             if len(self.ball_spr) > 400:
                 self.ball_spr.clear()
+            self.ball_spr[key] = ball_sprite(color, M.R_BALL * z)
         return self.ball_spr[key]
 
     def frame(self, i):

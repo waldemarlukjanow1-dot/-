@@ -1,0 +1,461 @@
+"""Pong Wars – Block für Block, im Glanz-Look.
+
+Regeln (bewusst einfach und nachvollziehbar):
+  * Lila (oben) gegen Türkis (unten). Ein Ball fliegt nur durch Felder seiner Farbe.
+  * Berührt ein Ball ein gegnerisches Feld, wird genau dieses eine Feld umgefärbt und der Ball prallt ab.
+  * Schwung: die Ballzahl eines Teams richtet sich nach seiner Fläche (überproportional, mit der Zeit stärker). Wer Gebiet gewinnt,
+    bekommt einen Ball dazu (spaltet sich von einem eigenen Ball ab); wer Gebiet verliert, verliert einen Ball
+    (der am stärksten eingekesselte ploppt). So setzt sich irgendwann eine Farbe durch.
+  * Hat ein Team keine Bälle mehr, füllen die Sieger die letzten Felder, danach wird alles ruhig.
+"""
+import bisect
+import math
+import os
+import random
+import subprocess
+import tempfile
+import wave
+from multiprocessing import Pool
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+from tiktok.render import tiktok_ui_mock
+from .breaker import glossy_tile, plop
+from .marble_render import reverb
+
+FPS = 60
+W1, H1, SS = 1080, 1920, 2
+SR = 44100
+CELL = 30
+COLS, ROWS = 28, 38
+FX0, FY0 = 100, 290
+FX1, FY1 = FX0 + COLS * CELL, FY0 + ROWS * CELL   # 940, 1430
+BG = (12, 7, 22)
+TEAM_C = [(170, 75, 255), (40, 215, 235)]           # Lila, Türkis
+BALL_C = [(120, 245, 255), (240, 150, 255)]      # Ball in der Gegenfarbe, gut sichtbar
+
+
+class PongFx:
+    def __init__(self, seed, power=(1.0, 0.3), n_max=40, n_ramp=34.0, ramp=(560.0, 1250.0, 26.0), r=9.0, max_t=75.0, ko=0.04):
+        self.rng = random.Random(seed)
+        self.state = np.zeros((ROWS, COLS), np.uint8)
+        self.state[ROWS // 2:] = 1
+        self.ko = ko
+        self.power, self.n_max, self.n_ramp, self.ramp, self.r, self.max_t = power, n_max, n_ramp, ramp, r, max_t
+        self.balls = []      # [x, y, vx, vy, team, alive]
+        self.flips = []      # (t, row, col, neues Team)
+        self.events = []     # (t, art, daten)
+        self.births, self.deaths = [], []   # (t, ball-index)
+        self.frames = []
+        self.t = 0.0
+        self.winner = self.win_t = self.clear_t = None
+        for team in (0, 1):
+            y = FY0 + (ROWS * 0.25 if team == 0 else ROWS * 0.75) * CELL
+            a = math.radians((60 if team == 0 else -120) + self.rng.uniform(-15, 15))
+            self.balls.append([(FX0 + FX1) / 2 + self.rng.uniform(-80, 80), y, math.cos(a), math.sin(a), team, True])
+        self.last_change = [-9.0, -9.0]
+
+    # ---------------------------------------------------------------- Physik
+    def step_ball(self, b, dist):
+        r = self.r
+        b[0] += b[2] * dist
+        b[1] += b[3] * dist
+        if b[0] < FX0 + r and b[2] < 0 or b[0] > FX1 - r and b[2] > 0:
+            b[2] = -b[2]
+            b[0] = min(max(b[0], FX0 + r), FX1 - r)
+        if b[1] < FY0 + r and b[3] < 0 or b[1] > FY1 - r and b[3] > 0:
+            b[3] = -b[3]
+            b[1] = min(max(b[1], FY0 + r), FY1 - r)
+        c0, c1 = int((b[0] - r - FX0) // CELL), int((b[0] + r - FX0) // CELL)
+        r0, r1 = int((b[1] - r - FY0) // CELL), int((b[1] + r - FY0) // CELL)
+        best, nx_s, ny_s = None, 0.0, 0.0
+        for rr in range(max(0, r0), min(ROWS - 1, r1) + 1):
+            for cc in range(max(0, c0), min(COLS - 1, c1) + 1):
+                if self.state[rr, cc] == b[4]:
+                    continue
+                x0, y0 = FX0 + cc * CELL, FY0 + rr * CELL
+                px, py = min(max(b[0], x0), x0 + CELL), min(max(b[1], y0), y0 + CELL)
+                dx, dy = b[0] - px, b[1] - py
+                d2 = dx * dx + dy * dy
+                if d2 >= r * r:
+                    continue
+                if d2 > 1e-9:
+                    d = math.sqrt(d2)
+                    nx, ny, pen = dx / d, dy / d, r - d
+                else:
+                    opts = [(b[0] - x0, -1, 0), (x0 + CELL - b[0], 1, 0), (b[1] - y0, 0, -1), (y0 + CELL - b[1], 0, 1)]
+                    p0, nx, ny = min(opts)
+                    pen = p0 + r
+                nx_s += nx
+                ny_s += ny
+                if best is None or pen > best[0]:
+                    best = (pen, rr, cc, nx, ny)
+        if best is None:
+            return
+        pen, rr, cc, nx, ny = best
+        b[0] += nx * pen
+        b[1] += ny * pen
+        L = math.hypot(nx_s, ny_s)
+        if L > 1e-9:
+            nx, ny = nx_s / L, ny_s / L
+        vn = b[2] * nx + b[3] * ny
+        if vn < 0:
+            b[2] -= 2 * vn * nx
+            b[3] -= 2 * vn * ny
+        a = self.rng.uniform(-0.05, 0.05)   # winzige Streuung gegen Endlosschleifen
+        vx, vy = b[2] * math.cos(a) - b[3] * math.sin(a), b[2] * math.sin(a) + b[3] * math.cos(a)
+        for lim, i in ((0.15, 1), (0.15, 0)):  # keine ganz flachen Winkel
+            v = [vx, vy]
+            if abs(v[i]) < lim:
+                v[i] = math.copysign(lim, v[i] if v[i] else 1.0)
+            vx, vy = v
+        L = math.hypot(vx, vy)
+        b[2], b[3] = vx / L, vy / L
+        # genau EIN Feld pro Berührung
+        self.state[rr, cc] = b[4]
+        self.flips.append((self.t, rr, cc, b[4]))
+        self.events.append((self.t, "flip", {"team": b[4]}))
+
+    # ---------------------------------------------------------------- Schwung-Regel
+    def targets(self):
+        share = float((self.state == 0).mean())
+        N = 2 + (self.n_max - 2) * min(1.0, self.t / self.n_ramp)
+        p = self.power[0] + self.power[1] * self.t   # Schwung wird mit der Zeit stärker
+        wa, wb = share ** p, (1 - share) ** p
+        tgt = [N * wa / (wa + wb), N * wb / (wa + wb)]
+        for team, sh in ((0, share), (1, 1 - share)):  # solange ein Team noch Gebiet hat, behält es einen Ball
+            tgt[team] = max(tgt[team], 1.0) if sh >= self.ko else 0.0
+        return tgt, share
+
+    def alive(self, team):
+        return [i for i, b in enumerate(self.balls) if b[5] and b[4] == team]
+
+    def manage(self):
+        tgt, share = self.targets()
+        for team in (0, 1):
+            ids = self.alive(team)
+            if self.t - self.last_change[team] < 0.3 or not ids:
+                continue
+            if tgt[team] >= len(ids) + 0.6:  # Ball dazu: spaltet sich von einem eigenen Ball ab
+                src = self.balls[self.rng.choice(ids)]
+                a = math.atan2(src[3], src[2]) + self.rng.choice((-1, 1)) * self.rng.uniform(0.6, 1.4)
+                self.balls.append([src[0], src[1], math.cos(a), math.sin(a), team, True])
+                self.births.append((self.t, len(self.balls) - 1))
+                self.events.append((self.t, "split", {"team": team}))
+                self.last_change[team] = self.t
+            elif tgt[team] <= len(ids) - 0.6:
+                # der am stärksten eingekesselte Ball scheidet aus
+                def own(i):
+                    b = self.balls[i]
+                    cc, rr = int((b[0] - FX0) // CELL), int((b[1] - FY0) // CELL)
+                    return int((self.state[max(0, rr - 2):rr + 3, max(0, cc - 2):cc + 3] == team).sum())
+                i = min(ids, key=own)
+                self.balls[i][5] = False
+                self.deaths.append((self.t, i))
+                self.events.append((self.t, "pop", {"team": team}))
+                self.last_change[team] = self.t
+                if len(ids) == 1:
+                    self.winner, self.win_t = 1 - team, self.t
+                    self.events.append((self.t, "win", {}))
+
+    def run(self):
+        dt = 1 / FPS
+        v0, v1, tr = self.ramp
+        while True:
+            p_ = min(1.0, self.t / tr)
+            sp = v0 + (v1 - v0) * p_ * p_ * (3 - 2 * p_)
+            if self.clear_t is not None:
+                sp *= max(0.0, 1 - (self.t - self.clear_t) / 2.5) ** 1.3
+            dist = sp * dt
+            n_sub = max(1, int(math.ceil(dist / (self.r * 0.7))))
+            for _ in range(n_sub):
+                for b in self.balls:
+                    if b[5]:
+                        self.step_ball(b, dist / n_sub)
+                self.t += dt / n_sub
+            if self.winner is None:
+                self.manage()
+            elif self.clear_t is None and (self.state == self.winner).all():
+                self.clear_t = self.t
+                self.events.append((self.t, "clear", {}))
+            self.frames.append((self.state.copy(), np.array([(b[0], b[1], b[4], b[5]) for b in self.balls], np.float32)))
+            if self.clear_t is not None and self.t >= self.clear_t + 5.0:
+                break
+            if self.t > self.max_t:
+                break
+        self.total = len(self.frames) / FPS
+        return self
+
+    def lead_changes(self):
+        lead, ch = None, 0
+        for st, _ in self.frames[FPS * 3::6]:
+            a = float((st == 0).mean())
+            l = 0 if a > 0.55 else 1 if a < 0.45 else lead
+            if l is not None and lead is not None and l != lead:
+                ch += 1
+            lead = l if l is not None else lead
+        return ch
+
+
+# ------------------------------------------------------------------ Darstellung
+
+class PongFxRenderer:
+    def __init__(self, sim):
+        self.sim = sim
+        k, s = SS, CELL * SS
+        self.tiles = [glossy_tile(TEAM_C[0], s, BG), glossy_tile(TEAM_C[1], s, BG)]
+        self.solid = [np.any(np.abs(t.astype(int) - np.array(BG)) > 12, axis=2) for t in self.tiles]
+        self.full = [np.tile(self.tiles[i], (ROWS, COLS, 1)) for i in (0, 1)]
+        self.fsolid = [np.tile(self.solid[i], (ROWS, COLS)) for i in (0, 1)]
+        fy, fx = np.mgrid[0:ROWS * s, 0:COLS * s].astype(np.float32)
+        self.diag = (fx + fy * 0.55) / s
+        yy, xx = np.mgrid[0:H1 * k, 0:W1 * k].astype(np.float32) / k
+        vig = 0.45 + 0.55 * np.exp(-(((xx - W1 / 2) / W1) ** 2 + ((yy - H1 * 0.45) / H1) ** 2) * 3.0)
+        self.base = (np.array((8, 5, 16), np.float32) * vig[..., None]).astype(np.uint8)
+        self.flip_t = [f[0] for f in sim.flips]
+        self.ball_spr = [self._ball_sprite(int(sim.r * k), BALL_C[i], TEAM_C[1 - i]) for i in (0, 1)]
+        yy, xx = np.mgrid[-24:24, -24:24].astype(np.float32)
+        self.flash = np.exp(-(xx ** 2 + yy ** 2) / (2 * 8.0 ** 2))[..., None] * 0.8
+        self.font = ImageFont.truetype("/usr/share/fonts/opentype/inter/Inter-Bold.otf", 26)
+        # Partikel je umgefärbtem Feld
+        P = []
+        for t0, rr, cc, team in sim.flips:
+            rng = random.Random(rr * 977 + cc * 31 + int(t0 * 1000))
+            cx, cy = FX0 + (cc + 0.5) * CELL, FY0 + (rr + 0.5) * CELL
+            col = TEAM_C[1 - team]          # Splitter in der alten Farbe
+            for _ in range(4):
+                a = rng.uniform(0, 2 * math.pi)
+                v = rng.uniform(80, 260)
+                P.append((t0, cx, cy, math.cos(a) * v, math.sin(a) * v, rng.uniform(2.0, 3.6), *col))
+        self.P = np.array(P, np.float32).reshape(-1, 9)
+
+    @staticmethod
+    def _ball_sprite(r, col, glow_c):
+        n = r * 6
+        yy, xx = np.mgrid[0:n, 0:n].astype(np.float32) - n / 2
+        d = np.hypot(xx, yy)
+        glow = np.clip(1 - d / (r * 2.6), 0, 1) ** 2 * 0.6
+        core = np.clip(r - d + 0.5, 0, 1)
+        hl = np.exp(-(((xx + r * 0.35) / (r * 0.35)) ** 2 + ((yy + r * 0.35) / (r * 0.35)) ** 2))
+        rgb = np.zeros((n, n, 3), np.float32)
+        rgb[:] = col
+        rgb = rgb * (1 - core[..., None] * 0) + (np.array(glow_c, np.float32) - rgb) * ((1 - core) * 0.6)[..., None]
+        rgb = rgb * (1 - 0.22 * core[..., None] * (yy / r).clip(0, 1)[..., None]) + hl[..., None] * 50
+        a = np.maximum(glow, core)
+        return Image.fromarray(np.dstack([np.clip(rgb, 0, 255), a * 255]).astype(np.uint8), "RGBA")
+
+    def frame(self, fi):
+        sim = self.sim
+        state, balls = sim.frames[fi]
+        t = (fi + 1) / FPS
+        k, s = SS, CELL * SS
+        img = self.base.copy()
+        field = np.zeros((ROWS * s, COLS * s, 3), np.uint8)
+        field[:] = BG
+        solid = np.zeros((ROWS * s, COLS * s), bool)
+        for team in (0, 1):
+            big = np.repeat(np.repeat(state == team, s, 0), s, 1)
+            field[big] = self.full[team][big]
+            solid |= big & self.fsolid[team]
+        sh = np.zeros_like(solid)                      # 3D: weicher Schatten
+        sh[3 * k:, 2 * k:] = solid[:-3 * k, :-2 * k]
+        sh &= ~solid
+        field[sh] = (field[sh] * 0.5).astype(np.uint8)
+        f = field.astype(np.float32)
+        pos = ((t % 6.0) / 6.0) * (COLS + ROWS * 0.55 + 16) - 8
+        band = np.exp(-((self.diag - pos) / 2.2) ** 2) * 0.28
+        f += (band * solid)[..., None] * (255 - f)
+        img[FY0 * k:FY1 * k, FX0 * k:FX1 * k] = np.clip(f, 0, 255).astype(np.uint8)
+        im = Image.fromarray(img, "RGB")
+        d = ImageDraw.Draw(im, "RGBA")
+        # frisch eroberte Felder: wachsen aus der Mitte, leuchten kurz auf
+        lo = bisect.bisect_left(self.flip_t, t - 0.3)
+        hi = bisect.bisect_right(self.flip_t, t)
+        flashes = []
+        for t0, rr, cc, team in sim.flips[lo:hi]:
+            e = (t - t0) / 0.3
+            x0, y0 = (FX0 + cc * CELL) * k, (FY0 + rr * CELL) * k
+            d.rectangle([x0, y0, x0 + s, y0 + s], fill=BG)
+            m = s * 0.43 * (1 - e) ** 2
+            c = tuple(int(v + (255 - v) * (1 - e) * 0.75) for v in TEAM_C[team])
+            d.rounded_rectangle([x0 + m + s * 0.07, y0 + m + s * 0.07, x0 + s - m - s * 0.07, y0 + s - m - s * 0.07],
+                                radius=max(1, int(s * 0.2)), fill=c)
+            if e < 0.5:
+                flashes.append((x0 / k + CELL / 2, y0 / k + CELL / 2, 1 - e / 0.5))
+        # Partikel (alte Farbe splittert ab)
+        P = self.P
+        if len(P):
+            i0, i1 = np.searchsorted(P[:, 0], t - 0.5), np.searchsorted(P[:, 0], t, side="right")
+            Q = P[i0:i1]
+            if len(Q) > 1600:
+                Q = Q[np.linspace(0, len(Q) - 1, 1600).astype(int)]
+            a = t - Q[:, 0]
+            px = Q[:, 1] + Q[:, 3] * (1 - np.exp(-a * 6)) / 6
+            py = Q[:, 2] + Q[:, 4] * (1 - np.exp(-a * 6)) / 6 + 50 * a * a
+            life = 1 - a / 0.5
+            ok = (px > FX0 + 3) & (px < FX1 - 3) & (py > FY0 + 3) & (py < FY1 - 3)
+            for x, y, z, l, r_, g_, b_ in zip(px[ok] * k, py[ok] * k, Q[ok, 5] * k * (0.4 + 0.6 * life[ok]), life[ok],
+                                              Q[ok, 6], Q[ok, 7], Q[ok, 8]):
+                wb = 0.45 * l
+                d.rounded_rectangle([x - z, y - z, x + z, y + z], radius=z * 0.4,
+                                    fill=(int(r_ + (255 - r_) * wb), int(g_ + (255 - g_) * wb), int(b_ + (255 - b_) * wb),
+                                          int(255 * min(1, l * 1.4))))
+        # Geburt (Abspaltung) und Ausscheiden: Ring
+        for lst, col_i in ((sim.births, None), (sim.deaths, None)):
+            for t0, i in lst:
+                e = (t - t0) / 0.6
+                if 0 <= e < 1:
+                    x, y, team = balls[i][0], balls[i][1], int(balls[i][2])
+                    R = (sim.r + 26 * e) * k
+                    col = BALL_C[team] if lst is sim.births else (255, 255, 255)
+                    d.ellipse([x * k - R, y * k - R, x * k + R, y * k + R], outline=col + (int(230 * (1 - e)),), width=3 * k)
+        rgba = im.convert("RGBA")
+        for i, (x, y, team, alive) in enumerate(balls):
+            sp = self.ball_spr[int(team)]
+            if not alive:
+                dt_ = next((t - t0 for t0, j in sim.deaths if j == i), 9)
+                e = dt_ / 0.35
+                if e >= 1:
+                    continue
+                sc = 1 + 0.9 * e
+                sp = sp.resize((max(2, int(sp.width * sc)), max(2, int(sp.height * sc))), Image.BILINEAR)
+                a = np.asarray(sp).copy()
+                a[..., 3] = (a[..., 3] * (1 - e)).astype(np.uint8)
+                sp = Image.fromarray(a, "RGBA")
+            rgba.alpha_composite(sp, (int(x * k - sp.width / 2), int(y * k - sp.height / 2)))
+        out = rgba.convert("RGB").reduce(SS)
+        arr = np.asarray(out, np.float32).copy()
+        h = self.flash.shape[0] // 2
+        for x, y, a in flashes[-300:]:
+            X, Y = int(x), int(y)
+            y0, y1, x0, x1 = max(0, Y - h), min(H1, Y + h), max(0, X - h), min(W1, X + h)
+            arr[y0:y1, x0:x1] += self.flash[y0 - Y + h:y1 - Y + h, x0 - X + h:x1 - X + h] * a * 255
+        g = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)).resize((W1 // 5, H1 // 5), Image.BILINEAR)
+        glow = np.asarray(g.filter(ImageFilter.GaussianBlur(4)).resize((W1, H1), Image.BILINEAR), np.float32)
+        arr = arr + np.clip(glow - 40, 0, 255) * 0.4
+        im = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+        self.hud(im, state, balls)
+        return im
+
+    def hud(self, im, state, balls):
+        """Schmaler Kräfte-Balken unter dem Feld + kleine Ball-Zähler (Randinfo)."""
+        d = ImageDraw.Draw(im, "RGBA")
+        share = float((state == 0).mean())
+        x0, x1, y = FX0 + 70, FX1 - 70, FY1 + 26
+        w = x1 - x0
+        d.rounded_rectangle([x0, y - 6, x1, y + 6], radius=6, fill=TEAM_C[1])
+        d.rounded_rectangle([x0, y - 6, x0 + w * share, y + 6], radius=6, fill=TEAM_C[0])
+        d.line([x0 + w / 2, y - 11, x0 + w / 2, y + 11], fill=(255, 255, 255, 160), width=2)
+        for team, cx in ((0, FX0 + 30), (1, FX1 - 30)):
+            n = int(sum(1 for b in balls if int(b[2]) == team and b[3]))
+            d.ellipse([cx - 22, y - 7 - 0, cx - 8, y + 7], fill=TEAM_C[team] + (255,))
+            d.text((cx - 3, y), f"{n}", font=self.font, fill=(255, 255, 255, 230), anchor="lm")
+
+
+# ------------------------------------------------------------------ Klang: nur weiches Ploppen
+
+def build_audio(sim, path):
+    total = sim.total
+    n = int(SR * total)
+    out = np.zeros(n + SR * 2)
+    rng = random.Random(3)
+    last = [-1.0, -1.0]
+
+    def put(t, s, vol):
+        i = int(t * SR)
+        e = min(len(out), i + len(s))
+        if i < e:
+            out[i:e] += s[: e - i] * vol
+
+    for t, kind, d in sim.events:
+        if kind == "flip":
+            tm = d["team"]
+            if t - last[tm] < 0.045:
+                continue
+            last[tm] = t
+            f = rng.choice((600, 640, 680, 720)) if tm == 0 else rng.choice((430, 460, 490, 520))
+            put(t, plop(f), 0.5)
+        elif kind == "split":
+            put(t, plop(330, big=True), 0.7)
+        elif kind == "pop":
+            put(t, plop(220, big=True), 0.9)
+        elif kind == "clear":
+            for j, f in enumerate((300, 360, 450)):
+                put(t + j * 0.12, plop(f, big=True), 0.6)
+    out = out[:n]
+    mix_ = out + reverb(out, 0.6) * 0.08
+    mix_ *= np.clip((total - np.arange(n) / SR) / 1.2, 0, 1)
+    peak = np.max(np.abs(mix_)) or 1
+    mix_ = np.tanh(mix_ / peak * 1.2) * 0.9
+    st = np.stack([mix_, mix_], axis=1)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes((st * 32767).astype(np.int16).tobytes())
+
+
+# ------------------------------------------------------------------ Ausgabe
+
+_R = None
+
+
+def _chunk(args):
+    i0, i1, out = args
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W1}x{H1}", "-r", str(FPS),
+           "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-maxrate", "12M", "-bufsize", "24M",
+           "-pix_fmt", "yuv420p", "-g", "120", out]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    for i in range(i0, i1):
+        proc.stdin.write(_R.frame(i).tobytes())
+    proc.stdin.close()
+    proc.wait()
+    return out
+
+
+def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4):
+    global _R
+    _R = PongFxRenderer(sim)
+    n = len(sim.frames)
+    if preview_dir:
+        os.makedirs(preview_dir, exist_ok=True)
+        for pt in preview_times:
+            fr = _R.frame(min(int(pt * FPS), n - 1))
+            base = os.path.join(preview_dir, f"{name}_vertical_{pt:05.1f}")
+            fr.save(base + ".png")
+            tiktok_ui_mock(fr, "vertical").save(base + "_ui.png")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        bounds = [n * j // jobs for j in range(jobs + 1)]
+        parts = [(bounds[j], bounds[j + 1], os.path.join(tmp, f"p{j}.mp4")) for j in range(jobs)]
+        with Pool(jobs) as p:
+            p.map(_chunk, parts)
+        lst = os.path.join(tmp, "list.txt")
+        with open(lst, "w") as f:
+            for _, _, pth in parts:
+                f.write(f"file '{pth}'\n")
+        wav = os.path.join(tmp, "a.wav")
+        build_audio(sim, wav)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", wav, "-c:v", "copy",
+                        "-c:a", "aac", "-b:a", "192k", "-shortest", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+                        "-movflags", "+faststart", out_path], check=True)
+
+
+SEED_PONG = 7
+PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run()}
+
+if __name__ == "__main__":
+    import sys
+    preview = "--preview" in sys.argv
+    names = [a for a in sys.argv[1:] if not a.startswith("--")] or list(PONG)
+    for name in names:
+        sim = PONG[name]()
+        print(name, "Dauer", round(sim.total, 1), "Sieger", sim.winner, "bei", sim.win_t, "fertig", sim.clear_t)
+        if preview:
+            ts = [0.0, 4.0, 10.0, 16.0, 22.0, 28.0, 34.0, 40.0, 46.0, sim.total - 4, sim.total - 0.1]
+            render(sim, name, None, preview_dir="output/preview", preview_times=ts)
+        else:
+            out = f"output/{name}_vertical.mp4"
+            render(sim, name, out)
+            print(out)

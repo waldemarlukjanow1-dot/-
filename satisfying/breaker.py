@@ -346,6 +346,8 @@ def build_audio(sim, path):
             put(t, plop(rng.choice((520, 560, 600, 640, 680))), 0.6)
         elif kind in ("plus", "mult"):
             put(t, plop(330, big=True), 0.9)
+    for t, x, y, st in getattr(sim, "waves", []):  # Welle: tiefes, weiches Plopp
+        put(t, plop(210, big=True), 0.8 * st)
     out = out[:n]
     mix_ = out + reverb(out, 0.6) * 0.08
     mix_ *= np.clip((total - np.arange(n) / SR) / 1.2, 0, 1)
@@ -379,7 +381,7 @@ def _chunk(args):
 
 def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4):
     global _R
-    _R = (ViceRenderer(sim) if isinstance(sim, ViceBreakerSim) else GlossyRenderer(sim) if isinstance(sim, SlowHeartSim)
+    _R = (FxRenderer(sim) if isinstance(sim, SymbolBreakerSim) else ViceRenderer(sim) if isinstance(sim, ViceBreakerSim) else GlossyRenderer(sim) if isinstance(sim, SlowHeartSim)
           else NeonRenderer(sim) if isinstance(sim, HeartBreakerSim) else BreakerRenderer(sim))
     n = len(sim.frames)
     if preview_dir:
@@ -760,19 +762,350 @@ class ViceRenderer(GlossyRenderer):
         glow = np.asarray(g.resize((W1, H1), Image.BILINEAR), np.float32)
         out = np.clip(np.asarray(im, np.float32) + glow * 0.9, 0, 255).astype(np.uint8)
         im = Image.fromarray(out)
-        # kleiner Ball-Zähler unten im Feld
-        n = len(sim.frames[fi][2])
+        draw_counter(im, len(sim.frames[fi][2]))
+        return im
+
+
+def draw_counter(im, n):
+    """Kleiner Ball-Zähler unten im Feld (Randinfo)."""
+    from PIL import ImageFont
+    d = ImageDraw.Draw(im, "RGBA")
+    txt = f"{n}"
+    f = ImageFont.truetype("/usr/share/fonts/opentype/inter/Inter-Bold.otf", 30)
+    tw = d.textlength(txt, font=f)
+    cx, cy = (FX0 + FX1) / 2, FY1 - 34
+    w = tw + 58
+    d.rounded_rectangle([cx - w / 2, cy - 22, cx + w / 2, cy + 22], radius=22, fill=(0, 0, 0, 150),
+                        outline=(255, 255, 255, 70), width=2)
+    d.ellipse([cx - w / 2 + 14, cy - 8, cx - w / 2 + 30, cy + 8], fill=(240, 235, 255, 255))
+    d.text((cx - w / 2 + 40, cy), txt, font=f, fill=(255, 255, 255, 235), anchor="lm")
+
+
+# ------------------------------------------------------------------ Blitz-Level mit Effekten
+
+class SymbolBreakerSim(BreakerSim):
+    """Wände bilden ein hohles Symbol (Polygon in Zell-Koordinaten). An den Lücken-Punkten ist die Wand offen,
+    dahinter ein kurzer Korridor mit Power-ups. Nach dem Lauf werden die Kettenreaktions-Wellen bestimmt."""
+
+    SHAPE = [(17, 0), (30, 0), (22, 13), (29, 13), (11, 35), (15, 19), (8, 19)]   # Blitz
+    OFFSET = (0, 4)
+    GAPS = [(12.0, 22.5), (24.0, 4.5), (25.0, 17.5)]
+
+    def __init__(self, seed, ramp=(700.0, 1800.0, 22.0), n_outer_plus=14, n_inner=(4, 1), n_low_plus=6, cap=320, **kw):
+        kw.setdefault("n_start", 1)
+        kw.setdefault("n_low", 1)
+        super().__init__(seed, cap=cap, **kw)
+        self.ramp = ramp
+        rng = random.Random(seed + 7)
+        self.kind[:] = GREEN
+        self.hp[:] = 1
+        ox, oy = self.OFFSET
+        pts = [(x + ox, y + oy) for x, y in self.SHAPE]
+        inside = np.array([[_poly_inside(c_ + 0.5, r_ + 0.5, pts) for c_ in range(COLS)] for r_ in range(ROWS)])
+        nb = np.roll(inside, 1, 0) & np.roll(inside, -1, 0) & np.roll(inside, 1, 1) & np.roll(inside, -1, 1)
+        outline = inside & ~nb
+        self.kind[outline] = WALL
+        rr, cc = np.mgrid[0:ROWS, 0:COLS] + 0.5
+        for gx, gy in self.GAPS:
+            d = np.hypot(cc - gx, rr - gy)
+            self.kind[outline & (d <= 1.1)] = GREEN          # Lücke in der Wand
+            self.kind[inside & ~outline & (d <= 2.6)] = EMPTY  # kurzer Korridor dahinter
+            ring = np.argwhere(inside & ~outline & (d > 2.6) & (d <= 3.8) & (self.kind == GREEN))
+            for r_, c_ in ring[:2]:
+                self.kind[r_, c_] = PLUS
+        cells = [tuple(rc) for rc in np.argwhere(inside & (self.kind == GREEN))]
+        rng.shuffle(cells)
+        npl, nm = n_inner
+        for rc in cells[:npl]:
+            self.kind[rc] = PLUS
+        for rc in cells[npl:npl + nm]:
+            self.kind[rc] = MULT
+        out_cells = [tuple(rc) for rc in np.argwhere(~inside & (self.kind == GREEN))]
+        rng.shuffle(out_cells)
+        for rc in [rc for rc in out_cells if rc[0] >= ROWS - 12][:n_low_plus] + out_cells[:n_outer_plus]:
+            self.kind[rc] = PLUS
+        for rc in [rc for rc in out_cells if rc[0] < 5 and self.kind[rc] == GREEN][:2]:
+            self.kind[rc] = MULT
+        # Zellen, die kein Ball erreichen kann (nur diagonal verbunden), gar nicht erst füllen
+        reach = np.zeros((ROWS, COLS), bool)
+        stack = [(ROWS - 1, c_) for c_ in range(COLS) if self.kind[ROWS - 1, c_] != WALL]
+        while stack:
+            r_, c_ = stack.pop()
+            if reach[r_, c_]:
+                continue
+            reach[r_, c_] = True
+            for r2, c2 in ((r_ + 1, c_), (r_ - 1, c_), (r_, c_ + 1), (r_, c_ - 1)):
+                if 0 <= r2 < ROWS and 0 <= c2 < COLS and not reach[r2, c2] and self.kind[r2, c2] != WALL:
+                    stack.append((r2, c2))
+        self.kind[~reach & (self.kind != WALL)] = EMPTY
+        self.inside = inside
+
+    def run(self, max_t=75.0):
+        super().run(max_t)
+        self.waves = find_waves(self)
+        return self
+
+
+def find_waves(sim, win=0.35, need=14, pause=2.2):
+    """Kettenreaktionen: MULT-Treffer und dichte Serien von Treffern lösen eine Licht-Welle aus.
+    -> Liste (t, x, y, stark)"""
+    waves = []
+    bt = [b[0] for b in sim.broken]
+    last = -9.0
+    j = 0
+    for i, (t0, r_, c_, kd) in enumerate(sim.broken):
+        cx, cy = BX0 + (c_ + 0.5) * CELL, BY0 + (r_ + 0.5) * CELL
+        if kd == MULT:
+            waves.append((t0, cx, cy, 1.0))
+            last = t0
+            continue
+        while bt[j] < t0 - win:
+            j += 1
+        if i - j + 1 >= need and t0 - last >= pause:
+            grp = sim.broken[j:i + 1]
+            x = sum(BX0 + (g[2] + 0.5) * CELL for g in grp) / len(grp)
+            y = sum(BY0 + (g[1] + 0.5) * CELL for g in grp) / len(grp)
+            waves.append((t0, x, y, 0.65))
+            last = t0
+    return waves
+
+
+BOLT = [(250, 252, 255), (150, 235, 255), (70, 170, 255), (120, 110, 255)]
+BOLT_PAL = dict(block=(160, 70, 255), bg=(12, 7, 24), plus=(255, 215, 80), mult=(80, 245, 200))
+
+
+class FxRenderer(GlossyRenderer):
+    """Glanz-Blöcke mit Schatten (3D), Verlaufs-Wände in voller Auflösung, weiche kurze Lichtspuren,
+    Partikel + Lichtblitz beim Zerplatzen, Kettenreaktions-Wellen, Vignette, Ball-Zähler."""
+
+    TRAIL_PX = 70      # Spurlänge in Pixeln (kurzer Kometenschweif)
+    P_LIFE = 0.55      # Partikel-Lebensdauer
+    W_LIFE = 1.6       # Wellen-Lebensdauer
+
+    def __init__(self, sim, wall_cols=BOLT, pal=BOLT_PAL):
+        global NEON
+        NEON = dict(NEON, **pal)
+        super().__init__(sim)
+        k, s = SS, CELL * SS
+        bg = np.array(NEON["bg"], np.float32)
+        # Wand-Kacheln im Verlauf von oben nach unten
+        rows = np.nonzero((sim.kind == WALL).any(axis=1))[0]
+        r0, r1 = rows.min(), rows.max()
+        self.wall_tiles = {}
+        for r_ in range(ROWS):
+            f = min(1.0, max(0.0, (r_ - r0) / max(1, r1 - r0)))
+            seg = f * (len(wall_cols) - 1)
+            i = min(int(seg), len(wall_cols) - 2)
+            c = tuple(int(a + (b - a) * (seg - i)) for a, b in zip(wall_cols[i], wall_cols[i + 1]))
+            self.wall_tiles[r_] = glossy_tile(c, s, NEON["bg"], neon=True)
+        self.walls = np.argwhere(sim.kind == WALL)
+        # Hintergrund: dunkle Vignette außen, im Feld sanfter Lichtschein von oben
+        yy, xx = np.mgrid[0:H1 * k, 0:W1 * k].astype(np.float32) / k
+        vig = 0.45 + 0.55 * np.exp(-(((xx - W1 / 2) / W1) ** 2 + ((yy - H1 * 0.45) / H1) ** 2) * 3.0)
+        base = np.array((8, 5, 16), np.float32) * vig[..., None]
+        fy = (yy - FY0) / (FY1 - FY0)
+        fx = (xx - (FX0 + FX1) / 2) / (FX1 - FX0)
+        glow = np.exp(-(fx ** 2) / 0.18 - ((fy - 0.15) ** 2) / 0.3) * 0.55
+        fld = bg * (0.75 + glow)[..., None]
+        inf = (xx >= FX0) & (xx < FX1) & (yy >= FY0) & (yy < FY1)
+        base[inf] = fld[inf]
+        self.base = base.astype(np.uint8)
+        fb = self.base[BY0 * k:BY0 * k + ROWS * s, BX0 * k:BX0 * k + COLS * s]
+        self.field_bg = fb.copy()
+        # Glow der Wände (statisch) einmal vorberechnen
+        from PIL import ImageFilter
+        wl = np.zeros((H1, W1, 3), np.float32)
+        for r_, c_ in self.walls:
+            t1 = np.asarray(Image.fromarray(self.wall_tiles[r_]).reduce(SS), np.float32)
+            y0, x0 = BY0 + r_ * CELL, BX0 + c_ * CELL
+            wl[y0:y0 + CELL, x0:x0 + CELL] = t1
+        g = Image.fromarray(wl.astype(np.uint8)).resize((W1 // 4, H1 // 4), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4))
+        self.wall_glow = np.asarray(g.resize((W1, H1), Image.BILINEAR), np.float32) * 0.85
+        # Partikel für jeden zerplatzenden Block vorab festlegen
+        cols = {GREEN: NEON["block"], PLUS: NEON["plus"], MULT: NEON["mult"]}
+        P = []
+        for t0, r_, c_, kd in sim.broken:
+            rng = random.Random(r_ * 1000 + c_ * 7 + int(t0 * 1000))
+            cx, cy = BX0 + (c_ + 0.5) * CELL, BY0 + (r_ + 0.5) * CELL
+            n = 9 if kd in (PLUS, MULT) else 6
+            col = cols.get(kd, NEON["block"])
+            for _ in range(n):
+                a = rng.uniform(0, 2 * math.pi)
+                v = rng.uniform(90, 330) * (1.4 if kd in (PLUS, MULT) else 1.0)
+                P.append((t0, cx + rng.uniform(-6, 6), cy + rng.uniform(-6, 6), math.cos(a) * v, math.sin(a) * v,
+                          rng.uniform(2.0, 4.2), *col))
+        self.P = np.array(P, np.float32).reshape(-1, 9)
+        self.waves = getattr(sim, "waves", [])
+        yy, xx = np.mgrid[-24:24, -24:24].astype(np.float32)
+        self.flash_spr = (np.exp(-(xx ** 2 + yy ** 2) / (2 * 9.0 ** 2)) * 0.9)[..., None] * np.array((255, 225, 255), np.float32)
+        self.ccx = (BX0 + (np.arange(COLS) + 0.5) * CELL)[None, :]
+        self.ccy = (BY0 + (np.arange(ROWS) + 0.5) * CELL)[:, None]
+
+    def wave_field(self, t):
+        """Helligkeit je Zelle durch laufende Wellen + Liste der sichtbaren Ringe."""
+        I = np.zeros((ROWS, COLS), np.float32)
+        rings = []
+        for t0, x, y, st in self.waves:
+            a = t - t0
+            if 0 <= a < self.W_LIFE:
+                R = 60 + 900 * a
+                fade = (1 - a / self.W_LIFE) ** 1.5 * st
+                d = np.hypot(self.ccx - x, self.ccy - y)
+                I += np.exp(-((d - R) / 55) ** 2) * fade
+                rings.append((x, y, R, fade))
+        return np.clip(I, 0, 1), rings
+
+    def frame(self, fi):
+        global BG, GREEN_C, PLUS_C, MULT_C
+        BG, GREEN_C, PLUS_C, MULT_C = NEON["bg"], NEON["block"], NEON["plus"], NEON["mult"]
+        import bisect
+        from PIL import ImageFilter
+        sim = self.sim
+        kind, hp, balls = sim.frames[fi]
+        t = (fi + 1) / FPS
+        k, s = SS, CELL * SS
+        img = self.base.copy()
+        field = self.field_bg.copy()
+        solid = np.zeros((ROWS * s, COLS * s), bool)
+        for kd, tile in self.tiles.items():
+            if kd == WALL:
+                continue
+            mask = kind == kd
+            if not mask.any():
+                continue
+            big = np.kron(mask, np.ones((s, s), bool))
+            field[big] = np.tile(tile, (ROWS, COLS, 1))[big]
+            solid |= big & np.tile(self.solid[kd], (ROWS, COLS))
+        wsolid = self.solid[WALL]
+        for r_, c_ in self.walls:
+            sl = (slice(r_ * s, r_ * s + s), slice(c_ * s, c_ * s + s))
+            tile = self.wall_tiles[r_]
+            field[sl][wsolid] = tile[wsolid]
+            solid[sl] |= wsolid
+        # 3D: weicher Schlagschatten unten rechts neben den Blöcken
+        sh = np.zeros_like(solid)
+        sh[3 * k:, 2 * k:] = solid[:-3 * k, :-2 * k]
+        sh &= ~solid
+        field[sh] = (field[sh] * 0.45).astype(np.uint8)
+        f = field.astype(np.float32)
+        # Licht-Reflexion wandert alle 5 s über das Feld
+        pos = ((t % 5.0) / 5.0) * (COLS + ROWS * 0.55 + 16) - 8
+        band = np.exp(-((self.diag - pos) / 2.2) ** 2) * 0.3
+        # Kettenreaktion: Welle lässt die Blöcke kurz aufleuchten und die Farbe pulsieren
+        I, rings = self.wave_field(t)
+        if rings:
+            Ib = np.repeat(np.repeat(I, s, 0), s, 1)
+            pulse = np.array((255, 170, 255), np.float32)
+            f += (Ib * solid)[..., None] * (pulse - f) * 0.6
+        f += (band * solid)[..., None] * (255 - f)
+        img[BY0 * k:BY0 * k + ROWS * s, BX0 * k:BX0 * k + COLS * s] = np.clip(f, 0, 255).astype(np.uint8)
+        im = Image.fromarray(img, "RGB")
         d = ImageDraw.Draw(im, "RGBA")
-        txt = f"{n}"
-        from PIL import ImageFont
-        f = ImageFont.truetype("/usr/share/fonts/opentype/inter/Inter-Bold.otf", 30)
-        tw = d.textlength(txt, font=f)
-        cx, cy = (FX0 + FX1) / 2, FY1 - 34
-        w = tw + 58
-        d.rounded_rectangle([cx - w / 2, cy - 22, cx + w / 2, cy + 22], radius=22, fill=(0, 0, 0, 150),
-                            outline=(255, 255, 255, 70), width=2)
-        d.ellipse([cx - w / 2 + 14, cy - 8, cx - w / 2 + 30, cy + 8], fill=(240, 235, 255, 255))
-        d.text((cx - w / 2 + 40, cy), txt, font=f, fill=(255, 255, 255, 235), anchor="lm")
+        for rr, cc in np.argwhere((kind == PLUS) | (kind == MULT)):
+            x0, y0 = (BX0 + cc * CELL) * k, (BY0 + rr * CELL) * k
+            cx, cy = x0 + s / 2, y0 + s / 2 + s * 0.03
+            w = int(s * 0.13)
+            ic = (90, 50, 0) if kind[rr, cc] == PLUS else (0, 80, 40)
+            if kind[rr, cc] == PLUS:
+                d.line([cx - s * 0.22, cy, cx + s * 0.22, cy], fill=ic, width=w)
+                d.line([cx, cy - s * 0.22, cx, cy + s * 0.22], fill=ic, width=w)
+            else:
+                d.line([cx - s * 0.19, cy - s * 0.19, cx + s * 0.19, cy + s * 0.19], fill=ic, width=w)
+                d.line([cx - s * 0.19, cy + s * 0.19, cx + s * 0.19, cy - s * 0.19], fill=ic, width=w)
+        # Wellen-Ring (dezent) im Feld
+        if rings:
+            ov = Image.new("RGBA", ((FX1 - FX0) * k, (FY1 - FY0) * k))
+            od = ImageDraw.Draw(ov)
+            for x, y, R, fade in rings:
+                X, Y, RR = (x - FX0) * k, (y - FY0) * k, R * k
+                for w_, a_ in ((14 * k, 0.12), (5 * k, 0.3), (2 * k, 0.55)):
+                    od.ellipse([X - RR, Y - RR, X + RR, Y + RR], outline=(255, 190, 255, int(255 * a_ * fade)), width=w_)
+            im.paste(ov, (FX0 * k, FY0 * k), ov)
+        cols = {GREEN: NEON["block"], PLUS: NEON["plus"], MULT: NEON["mult"]}
+        lo = bisect.bisect_left(self.broken_t, t - 0.22)
+        hi = bisect.bisect_right(self.broken_t, t)
+        flashes = []
+        for t0, rr, cc, kd in sim.broken[lo:hi]:  # zerplatzen: Lichtblitz + schrumpfender heller Block
+            e = (t - t0) / 0.22
+            x0, y0 = (BX0 + cc * CELL) * k, (BY0 + rr * CELL) * k
+            if e < 0.5:
+                flashes.append((x0 + s / 2, y0 + s / 2, 1 - e / 0.5))
+            m = s * 0.5 * e
+            c = tuple(int(v + (255 - v) * (1 - e) * 0.7) for v in cols.get(kd, NEON["block"]))
+            d.rounded_rectangle([x0 + m, y0 + m, x0 + s - m, y0 + s - m], radius=max(1, int(s * 0.2 * (1 - e))), fill=c)
+        lo2 = bisect.bisect_left(self.broken_t, t - 0.6)
+        for t0, rr, cc, kd in sim.broken[lo2:hi]:
+            if kd in (PLUS, MULT):
+                e = (t - t0) / 0.6
+                cx, cy = (BX0 + (cc + 0.5) * CELL) * k, (BY0 + (rr + 0.5) * CELL) * k
+                R = (10 + 60 * e) * k
+                col = NEON["plus"] if kd == PLUS else NEON["mult"]
+                d.ellipse([cx - R, cy - R, cx + R, cy + R], outline=col + (int(255 * (1 - e)),), width=3 * k)
+        # Partikel: fliegen auseinander, werden langsamer, verblassen
+        P = self.P
+        if len(P):
+            i0 = np.searchsorted(P[:, 0], t - self.P_LIFE)
+            i1 = np.searchsorted(P[:, 0], t, side="right")
+            Q = P[i0:i1]
+            if len(Q) > 1800:
+                Q = Q[np.linspace(0, len(Q) - 1, 1800).astype(int)]
+            a = t - Q[:, 0]
+            dr = 6.0
+            px = Q[:, 1] + Q[:, 3] * (1 - np.exp(-a * dr)) / dr
+            py = Q[:, 2] + Q[:, 4] * (1 - np.exp(-a * dr)) / dr + 60 * a * a
+            life = 1 - a / self.P_LIFE
+            sz = Q[:, 5] * (0.4 + 0.6 * life)
+            ok = (px > FX0 + 3) & (px < FX1 - 3) & (py > FY0 + 3) & (py < FY1 - 3)
+            px, py, sz, life, Q = px[ok], py[ok], sz[ok], life[ok], Q[ok]
+            for x, y, z, l, r_, g_, b_ in zip(px * k, py * k, sz * k, life, Q[:, 6], Q[:, 7], Q[:, 8]):
+                wb = 0.5 * l
+                col = (int(r_ + (255 - r_) * wb), int(g_ + (255 - g_) * wb), int(b_ + (255 - b_) * wb), int(255 * min(1, l * 1.4)))
+                d.rounded_rectangle([x - z, y - z, x + z, y + z], radius=z * 0.4, fill=col)
+        # weiche, kurze Lichtspuren hinter den Bällen
+        tr = Image.new("L", (W1 * k, H1 * k))
+        td = ImageDraw.Draw(tr)
+        nb = len(balls)
+        amp = 0.55 * min(1.0, max(0.3, (50 / max(nb, 1)) ** 0.5))
+        step = 1.0
+        if fi > 0 and nb:
+            m0 = min(nb, len(sim.frames[fi - 1][2]))
+            if m0:
+                step = float(np.median(np.hypot(*(balls[:m0] - sim.frames[fi - 1][2][:m0]).T))) + 1e-3
+        n_tr = int(min(10, max(2, round(self.TRAIL_PX / step))))
+        hist = [sim.frames[j][2] for j in range(max(0, fi - n_tr), fi + 1)]
+        L = len(hist)
+        for j in range(L - 1):
+            p0, p1 = hist[j], hist[j + 1]
+            m = min(len(p0), len(p1))
+            if m == 0:
+                continue
+            q = (j + 1) / L
+            val = int(255 * amp * q ** 1.6)
+            wd = max(1, int(sim.r * k * 1.5 * (0.35 + 0.65 * q)))
+            for (x0, y0), (x1, y1) in zip(p0[:m] * k, p1[:m] * k):
+                if abs(x1 - x0) + abs(y1 - y0) < 80 * k:
+                    td.line([x0, y0, x1, y1], fill=val, width=wd)
+        rgba = im.convert("RGBA")
+        sp = self.ball_spr
+        for x, y in balls:
+            rgba.alpha_composite(sp, (int(x * k - sp.width / 2), int(y * k - sp.height / 2)))
+        out = rgba.convert("RGB").reduce(SS)
+        arr = np.asarray(out, np.float32)
+        fs = self.flash_spr   # Lichtblitz additiv (weicher Lichtpunkt statt Scheibe)
+        h = fs.shape[0] // 2
+        for x, y, a in flashes[-400:]:
+            X, Y = int(x / k), int(y / k)
+            y0, y1, x0, x1 = max(0, Y - h), min(H1, Y + h), max(0, X - h), min(W1, X + h)
+            arr[y0:y1, x0:x1] += fs[y0 - Y + h:y1 - Y + h, x0 - X + h:x1 - X + h] * a
+        trl = np.asarray(tr.reduce(SS).filter(ImageFilter.GaussianBlur(2.2)), np.float32) / 255
+        arr = arr + trl[..., None] * np.array((200, 160, 255), np.float32) * (1 - arr / 320)
+        arr = arr + self.wall_glow * (0.85 + 0.15 * math.sin(t * 2.2))
+        g = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)).resize((W1 // 5, H1 // 5), Image.BILINEAR)
+        g = g.filter(ImageFilter.GaussianBlur(4))
+        glow = np.asarray(g.resize((W1, H1), Image.BILINEAR), np.float32)
+        arr = arr + np.clip(glow - 40, 0, 255) * 0.45
+        im = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+        draw_counter(im, nb)
         return im
 
 
@@ -780,7 +1113,9 @@ SEED = 23
 BREAKER = {"k02_block_breaker_waende": lambda: BreakerSim(SEED).run(),
            "k03_neon_herz": lambda: HeartBreakerSim(SEED_HEART).run(),
            "k04_neon_herz_glanz": lambda: SlowHeartSim(20, ramp=(700.0, 1800.0, 22.0), n_outer_plus=14, cap=320).run(),
-           "k05_vice_vi": lambda: ViceBreakerSim(SEED_VICE).run()}
+           "k05_vice_vi": lambda: ViceBreakerSim(SEED_VICE).run(),
+           "k06_blitz": lambda: SymbolBreakerSim(SEED_BOLT).run()}
+SEED_BOLT = 17
 SEED_VICE = 18
 SEED_HEART = 10
 

@@ -37,10 +37,18 @@ BALL_C = [(120, 245, 255), (240, 150, 255)]      # Ball in der Gegenfarbe, gut s
 
 
 class PongFx:
-    def __init__(self, seed, power=(1.0, 0.3), n_max=40, n_ramp=34.0, ramp=(560.0, 1250.0, 26.0), r=9.0, max_t=75.0, ko=0.04):
+    def __init__(self, seed, power=(1.0, 0.3), n_max=40, n_ramp=34.0, ramp=(560.0, 1250.0, 26.0), r=9.0, max_t=75.0, ko=0.04,
+                 split="tb", team_c=None, ball_c=None, names=None, konter=None):
         self.rng = random.Random(seed)
         self.state = np.zeros((ROWS, COLS), np.uint8)
-        self.state[ROWS // 2:] = 1
+        self.split = split
+        if split == "lr":          # links gegen rechts
+            self.state[:, COLS // 2:] = 1
+        else:                      # oben gegen unten
+            self.state[ROWS // 2:] = 1
+        self.team_c, self.ball_c, self.names = team_c or TEAM_C, ball_c or BALL_C, names
+        # Konter: (Schwelle, Bonus, Abklingzeit) – einmal pro Runde, wenn ein Team unter die Schwelle fällt
+        self.konter, self.konter_t, self.konter_team = konter, None, None
         self.ko = ko
         self.power, self.n_max, self.n_ramp, self.ramp, self.r, self.max_t = power, n_max, n_ramp, ramp, r, max_t
         self.balls = []      # [x, y, vx, vy, team, alive]
@@ -51,9 +59,15 @@ class PongFx:
         self.t = 0.0
         self.winner = self.win_t = self.clear_t = None
         for team in (0, 1):
-            y = FY0 + (ROWS * 0.25 if team == 0 else ROWS * 0.75) * CELL
-            a = math.radians((60 if team == 0 else -120) + self.rng.uniform(-15, 15))
-            self.balls.append([(FX0 + FX1) / 2 + self.rng.uniform(-80, 80), y, math.cos(a), math.sin(a), team, True])
+            if split == "lr":
+                x = FX0 + (COLS * 0.25 if team == 0 else COLS * 0.75) * CELL
+                y = (FY0 + FY1) / 2 + self.rng.uniform(-150, 150)
+                a = math.radians((30 if team == 0 else 210) + self.rng.uniform(-15, 15))
+            else:
+                x = (FX0 + FX1) / 2 + self.rng.uniform(-80, 80)
+                y = FY0 + (ROWS * 0.25 if team == 0 else ROWS * 0.75) * CELL
+                a = math.radians((60 if team == 0 else -120) + self.rng.uniform(-15, 15))
+            self.balls.append([x, y, math.cos(a), math.sin(a), team, True])
         self.last_change = [-9.0, -9.0]
 
     # ---------------------------------------------------------------- Physik
@@ -122,7 +136,14 @@ class PongFx:
         share = float((self.state == 0).mean())
         N = 2 + (self.n_max - 2) * min(1.0, self.t / self.n_ramp)
         p = self.power[0] + self.power[1] * self.t   # Schwung wird mit der Zeit stärker
-        wa, wb = share ** p, (1 - share) ** p
+        sa, sb = share, 1 - share
+        if self.konter_t is not None:   # Konter-Bonus klingt langsam ab
+            bonus = self.konter[1] * math.exp(-(self.t - self.konter_t) / self.konter[2])
+            if self.konter_team == 0:
+                sa += bonus
+            else:
+                sb += bonus
+        wa, wb = sa ** p, sb ** p
         tgt = [N * wa / (wa + wb), N * wb / (wa + wb)]
         for team, sh in ((0, share), (1, 1 - share)):  # solange ein Team noch Gebiet hat, behält es einen Ball
             tgt[team] = max(tgt[team], 1.0) if sh >= self.ko else 0.0
@@ -132,6 +153,19 @@ class PongFx:
         return [i for i, b in enumerate(self.balls) if b[5] and b[4] == team]
 
     def manage(self):
+        if self.konter and self.konter_t is None and self.t > 6:
+            share = float((self.state == 0).mean())
+            for team, sh in ((0, share), (1, 1 - share)):
+                if sh < self.konter[0]:
+                    self.konter_t, self.konter_team = self.t, team
+                    self.events.append((self.t, "konter", {"team": team}))
+                    for i in self.alive(team):   # jeder eigene Ball spaltet sich
+                        src = self.balls[i]
+                        a = math.atan2(src[3], src[2]) + math.pi * 0.5
+                        self.balls.append([src[0], src[1], math.cos(a), math.sin(a), team, True])
+                        self.births.append((self.t, len(self.balls) - 1))
+                    self.last_change[team] = self.t
+                    break
         tgt, share = self.targets()
         for team in (0, 1):
             ids = self.alive(team)
@@ -203,8 +237,9 @@ class PongFx:
 class PongFxRenderer:
     def __init__(self, sim):
         self.sim = sim
+        self.tc, self.bc = sim.team_c, sim.ball_c
         k, s = SS, CELL * SS
-        self.tiles = [glossy_tile(TEAM_C[0], s, BG), glossy_tile(TEAM_C[1], s, BG)]
+        self.tiles = [glossy_tile(self.tc[0], s, BG), glossy_tile(self.tc[1], s, BG)]
         self.solid = [np.any(np.abs(t.astype(int) - np.array(BG)) > 12, axis=2) for t in self.tiles]
         self.full = [np.tile(self.tiles[i], (ROWS, COLS, 1)) for i in (0, 1)]
         self.fsolid = [np.tile(self.solid[i], (ROWS, COLS)) for i in (0, 1)]
@@ -214,7 +249,7 @@ class PongFxRenderer:
         vig = 0.45 + 0.55 * np.exp(-(((xx - W1 / 2) / W1) ** 2 + ((yy - H1 * 0.45) / H1) ** 2) * 3.0)
         self.base = (np.array((8, 5, 16), np.float32) * vig[..., None]).astype(np.uint8)
         self.flip_t = [f[0] for f in sim.flips]
-        self.ball_spr = [self._ball_sprite(int(sim.r * k), BALL_C[i], TEAM_C[1 - i]) for i in (0, 1)]
+        self.ball_spr = [self._ball_sprite(int(sim.r * k), self.bc[i], self.tc[1 - i]) for i in (0, 1)]
         yy, xx = np.mgrid[-24:24, -24:24].astype(np.float32)
         self.flash = np.exp(-(xx ** 2 + yy ** 2) / (2 * 8.0 ** 2))[..., None] * 0.8
         self.font = ImageFont.truetype("/usr/share/fonts/opentype/inter/Inter-Bold.otf", 26)
@@ -223,7 +258,7 @@ class PongFxRenderer:
         for t0, rr, cc, team in sim.flips:
             rng = random.Random(rr * 977 + cc * 31 + int(t0 * 1000))
             cx, cy = FX0 + (cc + 0.5) * CELL, FY0 + (rr + 0.5) * CELL
-            col = TEAM_C[1 - team]          # Splitter in der alten Farbe
+            col = self.tc[1 - team]          # Splitter in der alten Farbe
             for _ in range(4):
                 a = rng.uniform(0, 2 * math.pi)
                 v = rng.uniform(80, 260)
@@ -278,7 +313,7 @@ class PongFxRenderer:
             x0, y0 = (FX0 + cc * CELL) * k, (FY0 + rr * CELL) * k
             d.rectangle([x0, y0, x0 + s, y0 + s], fill=BG)
             m = s * 0.43 * (1 - e) ** 2
-            c = tuple(int(v + (255 - v) * (1 - e) * 0.75) for v in TEAM_C[team])
+            c = tuple(int(v + (255 - v) * (1 - e) * 0.75) for v in self.tc[team])
             d.rounded_rectangle([x0 + m + s * 0.07, y0 + m + s * 0.07, x0 + s - m - s * 0.07, y0 + s - m - s * 0.07],
                                 radius=max(1, int(s * 0.2)), fill=c)
             if e < 0.5:
@@ -308,7 +343,7 @@ class PongFxRenderer:
                 if 0 <= e < 1:
                     x, y, team = balls[i][0], balls[i][1], int(balls[i][2])
                     R = (sim.r + 26 * e) * k
-                    col = BALL_C[team] if lst is sim.births else (255, 255, 255)
+                    col = self.bc[team] if lst is sim.births else (255, 255, 255)
                     d.ellipse([x * k - R, y * k - R, x * k + R, y * k + R], outline=col + (int(230 * (1 - e)),), width=3 * k)
         rgba = im.convert("RGBA")
         for i, (x, y, team, alive) in enumerate(balls):
@@ -336,7 +371,68 @@ class PongFxRenderer:
         arr = arr + np.clip(glow - 40, 0, 255) * 0.4
         im = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
         self.hud(im, state, balls)
+        if sim.names:
+            self.story(im, state, t)
         return im
+
+    def story(self, im, state, t):
+        """Prozent-Anzeige oben, Text-Hook am Anfang, Konter-Einblendung, Sieger am Ende."""
+        sim = self.sim
+        d = ImageDraw.Draw(im, "RGBA")
+        F = "/usr/share/fonts/opentype/inter/InterDisplay-Black.otf"
+        share = float((state == 0).mean())
+        pc = [round(share * 100), 100 - round(share * 100)]
+        f = ImageFont.truetype(F, 38)
+        y = FY0 - 36
+        d.text((FX0 + 4, y), f"{sim.names[0]} {pc[0]}%", font=f, fill=self.tc[0] + (255,), anchor="lm",
+               stroke_width=3, stroke_fill=(0, 0, 0, 200))
+        d.text((FX1 - 4, y), f"{pc[1]}% {sim.names[1]}", font=f, fill=self.tc[1] + (255,), anchor="rm",
+               stroke_width=3, stroke_fill=(0, 0, 0, 200))
+
+        def banner(lines, alpha, cy, scale=1.0):
+            if alpha <= 0.01:
+                return
+            hs = [int(sz * scale) for _, sz, _ in lines]
+            fonts = [ImageFont.truetype(F, h) for h in hs]
+            ws = [d.textlength(txt, font=fo) for (txt, _, _), fo in zip(lines, fonts)]
+            H = sum(hs) * 1.25 + 40
+            W = max(ws) + 70
+            cx = (FX0 + FX1) / 2
+            d.rounded_rectangle([cx - W / 2, cy - H / 2, cx + W / 2, cy + H / 2], radius=28,
+                                fill=(6, 4, 14, int(235 * alpha)), outline=(255, 255, 255, int(60 * alpha)), width=2)
+            yy = cy - H / 2 + 20
+            for (txt, _, col), fo, h in zip(lines, fonts, hs):
+                if isinstance(col, list):   # mehrfarbig: [(teil, farbe), ...]
+                    x = cx - d.textlength(txt, font=fo) / 2
+                    for part, c in col:
+                        c = tuple(int(v + (255 - v) * 0.2) for v in c)
+                        d.text((x, yy), part, font=fo, fill=c + (int(255 * alpha),), anchor="la")
+                        x += d.textlength(part, font=fo)
+                else:
+                    col = tuple(int(v + (255 - v) * 0.2) for v in col)
+                    d.text((cx, yy), txt, font=fo, fill=col + (int(255 * alpha),), anchor="ma",
+                           stroke_width=2, stroke_fill=(255, 255, 255, int(90 * alpha)))
+                yy += h * 1.25
+
+        # Hook in den ersten Sekunden
+        a = min(1.0, t / 0.25) * min(1.0, max(0.0, (3.4 - t) / 0.5))
+        n0, n1 = sim.names
+        banner([("Welche Farbe gewinnt?", 64, (255, 255, 255)),
+                (f"{n0} vs {n1}", 50, [(n0, self.tc[0]), (" vs ", (255, 255, 255)), (n1, self.tc[1])])],
+               a, (FY0 + FY1) / 2 - 40)
+        # Konter-Einblendung
+        if sim.konter_t is not None:
+            e = t - sim.konter_t
+            if 0 <= e < 2.2:
+                a = min(1.0, e / 0.15) * min(1.0, (2.2 - e) / 0.5)
+                sc = 1.0 + 0.25 * max(0.0, 1 - e / 0.25)
+                tm = sim.konter_team
+                banner([("KONTER!", 70, self.tc[tm])], a, (FY0 + FY1) / 2 - 40, sc)
+        # Sieger
+        if sim.clear_t is not None and t > sim.clear_t + 0.4:
+            a = min(1.0, (t - sim.clear_t - 0.4) / 0.6)
+            w = sim.winner
+            banner([(f"{sim.names[w]} GEWINNT!", 66, self.tc[w])], a, (FY0 + FY1) / 2 - 40)
 
     def hud(self, im, state, balls):
         """Schmaler Kräfte-Balken unter dem Feld + kleine Ball-Zähler (Randinfo)."""
@@ -344,12 +440,13 @@ class PongFxRenderer:
         share = float((state == 0).mean())
         x0, x1, y = FX0 + 70, FX1 - 70, FY1 + 26
         w = x1 - x0
-        d.rounded_rectangle([x0, y - 6, x1, y + 6], radius=6, fill=TEAM_C[1])
-        d.rounded_rectangle([x0, y - 6, x0 + w * share, y + 6], radius=6, fill=TEAM_C[0])
+        d.rounded_rectangle([x0, y - 6, x1, y + 6], radius=6, fill=self.tc[1])
+        if share > 0.02:
+            d.rounded_rectangle([x0, y - 6, x0 + w * share, y + 6], radius=6, fill=self.tc[0])
         d.line([x0 + w / 2, y - 11, x0 + w / 2, y + 11], fill=(255, 255, 255, 160), width=2)
         for team, cx in ((0, FX0 + 30), (1, FX1 - 30)):
             n = int(sum(1 for b in balls if int(b[2]) == team and b[3]))
-            d.ellipse([cx - 22, y - 7 - 0, cx - 8, y + 7], fill=TEAM_C[team] + (255,))
+            d.ellipse([cx - 22, y - 7 - 0, cx - 8, y + 7], fill=self.tc[team] + (255,))
             d.text((cx - 3, y), f"{n}", font=self.font, fill=(255, 255, 255, 230), anchor="lm")
 
 
@@ -443,7 +540,11 @@ def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4):
 
 
 SEED_PONG = 7
-PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run()}
+ORANGE_BLAU = dict(team_c=[(255, 135, 30), (45, 120, 255)], ball_c=[(150, 205, 255), (255, 200, 120)],
+                   names=["ORANGE", "BLAU"])
+PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run(),
+        "p02_orange_vs_blau": lambda: PongFx(12, power=(1.0, 0.36), split="lr", konter=(0.25, 0.95, 9.0),
+                                             ramp=(560.0, 1450.0, 24.0), **ORANGE_BLAU).run()}
 
 if __name__ == "__main__":
     import sys
@@ -453,7 +554,7 @@ if __name__ == "__main__":
         sim = PONG[name]()
         print(name, "Dauer", round(sim.total, 1), "Sieger", sim.winner, "bei", sim.win_t, "fertig", sim.clear_t)
         if preview:
-            ts = [0.0, 4.0, 10.0, 16.0, 22.0, 28.0, 34.0, 40.0, 46.0, sim.total - 4, sim.total - 0.1]
+            ts = [1.5, 4.0, 10.0, 16.0, 22.0, 28.0, 34.0, 40.0, 46.0, sim.total - 4, sim.total - 0.1]
             render(sim, name, None, preview_dir="output/preview", preview_times=ts)
         else:
             out = f"output/{name}_vertical.mp4"

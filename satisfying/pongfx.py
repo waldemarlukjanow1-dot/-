@@ -543,6 +543,8 @@ ORANGE_BLAU = dict(team_c=[(255, 135, 30), (45, 120, 255)], ball_c=[(150, 205, 2
                    names=["ORANGE", "BLAU"])
 PINK_GRUEN = dict(team_c=[(255, 55, 160), (50, 225, 105)], ball_c=[(175, 255, 195), (255, 185, 225)],
                   names=["PINK", "GRÜN"])
+ROT_GELB = dict(team_c=[(240, 40, 60), (255, 205, 30)], ball_c=[(255, 240, 160), (190, 20, 50)],
+                names=["ROT", "GELB"])
 PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run(),
         "p02_orange_vs_blau": lambda: PongFx(12, power=(1.0, 0.36), split="lr", konter=(0.25, 0.95, 9.0),
                                              ramp=(560.0, 1450.0, 24.0), **ORANGE_BLAU).run(),
@@ -550,7 +552,9 @@ PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run(),
         "p03_hin_und_her": lambda: PongFx(27, power=(1.0, 0.6), split="lr", konter=(0.37, 0.95, 5.5, 30.0),
                                           ramp=(560.0, 1700.0, 24.0), **ORANGE_BLAU).run(),
         "p04_pink_vs_gruen": lambda: PongFx(20, power=(1.0, 0.6), split="lr", konter=(0.37, 0.95, 5.5, 30.0),
-                                            ramp=(560.0, 1700.0, 24.0), **PINK_GRUEN).run()}
+                                            ramp=(560.0, 1700.0, 24.0), **PINK_GRUEN).run(),
+        "p05_rot_vs_gelb": lambda: PongFx(4, power=(1.0, 0.6), split="lr", konter=(0.37, 0.95, 5.5, 30.0),
+                                          ramp=(560.0, 1700.0, 24.0), **ROT_GELB).run()}
 
 if __name__ == "__main__":
     import sys

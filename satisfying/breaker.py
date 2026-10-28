@@ -27,7 +27,7 @@ W1, H1, SS = 1080, 1920, 2
 SR = 44100
 
 # Spielfeld (Bildschirm-Pixel), rechts bleibt Platz für die TikTok-Buttons
-FX0, FY0, FX1, FY1 = 40, 240, 930, 1420
+FX0, FY0, FX1, FY1 = 100, 290, 940, 1460
 CELL = 22
 COLS = (FX1 - FX0) // CELL           # 49
 ROWS = 43
@@ -379,8 +379,8 @@ def _chunk(args):
 
 def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4):
     global _R
-    _R = (GlossyRenderer(sim) if isinstance(sim, SlowHeartSim) else NeonRenderer(sim) if isinstance(sim, HeartBreakerSim)
-          else BreakerRenderer(sim))
+    _R = (ViceRenderer(sim) if isinstance(sim, ViceBreakerSim) else GlossyRenderer(sim) if isinstance(sim, SlowHeartSim)
+          else NeonRenderer(sim) if isinstance(sim, HeartBreakerSim) else BreakerRenderer(sim))
     n = len(sim.frames)
     if preview_dir:
         os.makedirs(preview_dir, exist_ok=True)
@@ -638,10 +638,150 @@ class SlowHeartSim(HeartBreakerSim):
         self.ramp = ramp
 
 
+
+# ------------------------------------------------------------------ "VI"-Level im Vice-City-Look (eigenes Design)
+
+def _poly_inside(px, py, poly):
+    ins = False
+    n = len(poly)
+    for i in range(n):
+        x0, y0 = poly[i]
+        x1, y1 = poly[(i + 1) % n]
+        if (y0 > py) != (y1 > py) and px < x0 + (py - y0) * (x1 - x0) / (y1 - y0):
+            ins = not ins
+    return ins
+
+
+class ViceBreakerSim(BreakerSim):
+    """Wände bilden große, hohle Buchstaben "VI" (eigene Formen). Jeder Buchstabe hat unten einen schmalen
+    Eingang mit kurzem Korridor und Power-ups dahinter. Langsamer Start, Ballzahl baut sich auf."""
+
+    def __init__(self, seed, ramp=(700.0, 1800.0, 22.0), n_outer_plus=14, cap=320, **kw):
+        kw.setdefault("n_start", 1)
+        kw.setdefault("n_low", 1)
+        super().__init__(seed, cap=cap, **kw)
+        self.ramp = ramp
+        rng = random.Random(seed + 7)
+        self.kind[:] = GREEN
+        self.hp[:] = 1
+        ox, oy = (COLS - 30) // 2, 7          # Buchstaben-Bereich: 30 Spalten breit, Zeilen 7..31
+        V = [(0, 0), (7, 0), (10.5, 15), (14, 0), (21, 0), (13, 24), (8, 24)]
+        I = [(23, 0), (30, 0), (30, 4), (28.5, 4), (28.5, 20), (30, 20), (30, 24), (23, 24), (23, 20), (24.5, 20),
+             (24.5, 4), (23, 4)]
+        self.letters = []
+        for poly, gap_c in ((V, 10.5), (I, 26.5)):
+            pts = [(x + ox, y + oy) for x, y in poly]
+            inside = np.zeros((ROWS, COLS), bool)
+            for r_ in range(ROWS):
+                for c_ in range(COLS):
+                    inside[r_, c_] = _poly_inside(c_ + 0.5, r_ + 0.5, pts)
+            nb = np.roll(inside, 1, 0) & np.roll(inside, -1, 0) & np.roll(inside, 1, 1) & np.roll(inside, -1, 1)
+            outline = inside & ~nb
+            self.kind[outline] = WALL
+            bottom = max(r_ for r_ in range(ROWS) if inside[r_].any())
+            gc = int(gap_c + ox)
+            for c_ in range(gc - 1, gc + 1):  # schmaler Eingang (2 Felder)
+                self.kind[bottom, c_] = GREEN
+            for r_ in range(bottom - 3, bottom):  # kurzer Korridor
+                for c_ in range(gc - 1, gc + 1):
+                    if inside[r_, c_] and self.kind[r_, c_] == GREEN:
+                        self.kind[r_, c_] = EMPTY
+            for c_ in (gc - 1, gc):
+                if self.kind[bottom - 4, c_] != WALL:
+                    self.kind[bottom - 4, c_] = PLUS
+            cells = [(r_, c_) for r_ in range(ROWS) for c_ in range(COLS) if inside[r_, c_] and self.kind[r_, c_] == GREEN]
+            rng.shuffle(cells)
+            for rc in cells[:3]:
+                self.kind[rc] = PLUS
+            if cells[3:]:
+                self.kind[cells[3]] = MULT
+            self.letters.append(inside)
+        letters = self.letters[0] | self.letters[1]
+        out_cells = [(r_, c_) for r_ in range(ROWS) for c_ in range(COLS) if self.kind[r_, c_] == GREEN and not letters[r_, c_]]
+        rng.shuffle(out_cells)
+        for rc in [rc for rc in out_cells if rc[0] >= ROWS - 8][:3] + out_cells[:n_outer_plus]:
+            self.kind[rc] = PLUS
+        top = [rc for rc in out_cells if rc[0] < 7 and self.kind[rc] == GREEN]
+        for rc in top[:2]:
+            self.kind[rc] = MULT
+
+
+VICE = dict(block=(150, 70, 255), block_d=(50, 16, 105), bg=(14, 8, 26), plus=(255, 225, 90), mult=(90, 245, 210))
+SUNSET = [(255, 214, 90), (255, 160, 60), (255, 110, 80), (255, 70, 130)]
+
+
+class ViceRenderer(GlossyRenderer):
+    """Glanz-Look mit Sonnenuntergangs-Verlauf auf den Wänden + kleiner Ball-Zähler unten."""
+
+    def __init__(self, sim):
+        global NEON
+        NEON = dict(NEON, **VICE)
+        super().__init__(sim)
+        s = CELL * SS
+        rows = np.nonzero((sim.kind == WALL).any(axis=1))[0]
+        r0, r1 = rows.min(), rows.max()
+        self.wall_tiles = {}
+        for r_ in range(ROWS):
+            f = 0 if r1 == r0 else min(1.0, max(0.0, (r_ - r0) / (r1 - r0)))
+            seg = f * (len(SUNSET) - 1)
+            i = min(int(seg), len(SUNSET) - 2)
+            c = tuple(int(a + (b - a) * (seg - i)) for a, b in zip(SUNSET[i], SUNSET[i + 1]))
+            self.wall_tiles[r_] = glossy_tile(c, s, NEON["bg"], neon=True)
+        from PIL import ImageFont
+        self.font = ImageFont.truetype("/usr/share/fonts/opentype/inter/Inter-Bold.otf", 30 * SS)
+
+    def frame(self, fi):
+        # Wände je Zeile im Verlauf: dafür die Wand-Kachel pro Frame zeilenweise einsetzen
+        sim = self.sim
+        kind = sim.frames[fi][0]
+        base_tiles = self.tiles
+        self.tiles = {k: v for k, v in base_tiles.items() if k != WALL}
+        im = GlossyRenderer.frame(self, fi)
+        self.tiles = base_tiles
+        k = SS
+        s = CELL * k
+        # Wände separat (in 1x) einzeichnen: Kacheln auf 1x verkleinert
+        arr = np.array(im)
+        s1 = CELL
+        for r_, c_ in np.argwhere(kind == WALL):
+            t = self.wall_tiles[r_]
+            t1 = t[::SS, ::SS]
+            y0, x0 = BY0 + r_ * s1, BX0 + c_ * s1
+            arr[y0:y0 + s1, x0:x0 + s1] = t1[:s1, :s1]
+        im = Image.fromarray(arr)
+        # Neon-Glow für die Wände
+        from PIL import ImageFilter
+        wmask = np.zeros((H1, W1), np.float32)
+        for r_, c_ in np.argwhere(kind == WALL):
+            y0, x0 = BY0 + r_ * s1, BX0 + c_ * s1
+            wmask[y0:y0 + s1, x0:x0 + s1] = 1
+        wl = Image.fromarray((np.asarray(im, np.float32) * wmask[..., None]).astype(np.uint8))
+        g = wl.resize((W1 // 4, H1 // 4), Image.BILINEAR).filter(ImageFilter.GaussianBlur(3))
+        glow = np.asarray(g.resize((W1, H1), Image.BILINEAR), np.float32)
+        out = np.clip(np.asarray(im, np.float32) + glow * 0.9, 0, 255).astype(np.uint8)
+        im = Image.fromarray(out)
+        # kleiner Ball-Zähler unten im Feld
+        n = len(sim.frames[fi][2])
+        d = ImageDraw.Draw(im, "RGBA")
+        txt = f"{n}"
+        from PIL import ImageFont
+        f = ImageFont.truetype("/usr/share/fonts/opentype/inter/Inter-Bold.otf", 30)
+        tw = d.textlength(txt, font=f)
+        cx, cy = (FX0 + FX1) / 2, FY1 - 34
+        w = tw + 58
+        d.rounded_rectangle([cx - w / 2, cy - 22, cx + w / 2, cy + 22], radius=22, fill=(0, 0, 0, 150),
+                            outline=(255, 255, 255, 70), width=2)
+        d.ellipse([cx - w / 2 + 14, cy - 8, cx - w / 2 + 30, cy + 8], fill=(240, 235, 255, 255))
+        d.text((cx - w / 2 + 40, cy), txt, font=f, fill=(255, 255, 255, 235), anchor="lm")
+        return im
+
+
 SEED = 23
 BREAKER = {"k02_block_breaker_waende": lambda: BreakerSim(SEED).run(),
            "k03_neon_herz": lambda: HeartBreakerSim(SEED_HEART).run(),
-           "k04_neon_herz_glanz": lambda: SlowHeartSim(20, ramp=(700.0, 1800.0, 22.0), n_outer_plus=14, cap=320).run()}
+           "k04_neon_herz_glanz": lambda: SlowHeartSim(20, ramp=(700.0, 1800.0, 22.0), n_outer_plus=14, cap=320).run(),
+           "k05_vice_vi": lambda: ViceBreakerSim(SEED_VICE).run()}
+SEED_VICE = 18
 SEED_HEART = 10
 
 if __name__ == "__main__":

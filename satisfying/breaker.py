@@ -374,7 +374,7 @@ def _chunk(args):
 
 def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4):
     global _R
-    _R = BreakerRenderer(sim)
+    _R = NeonRenderer(sim) if isinstance(sim, HeartBreakerSim) else BreakerRenderer(sim)
     n = len(sim.frames)
     if preview_dir:
         os.makedirs(preview_dir, exist_ok=True)
@@ -400,13 +400,105 @@ def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4):
                         "-movflags", "+faststart", out_path], check=True)
 
 
+# ------------------------------------------------------------------ Neon-Herz-Level
+
+NEON = dict(block=(168, 70, 255), block_d=(58, 16, 105), bg=(14, 8, 26), wall=(60, 240, 255), wall_d=(10, 120, 150),
+            plus=(255, 205, 60), mult=(110, 255, 140))
+
+
+class HeartBreakerSim(BreakerSim):
+    """Gleiche Physik, aber die Wände bilden ein Symbol: ein großes Herz (Eingang an der Spitze) mit einer
+    Raute im Inneren (Eingang oben). Hinter jedem Eingang ein kurzer Korridor mit Power-ups."""
+
+    def __init__(self, seed, speed=1500.0, n_outer_plus=8, cap=260, **kw):
+        kw["cap"] = cap
+        super().__init__(seed, speed=speed, **kw)
+        rng = random.Random(seed + 99)
+        self.kind[:] = GREEN
+        self.hp[:] = 1
+        cx, cy = COLS / 2 - 0.5, 21.0
+        inside = np.zeros((ROWS, COLS), bool)
+        for r_ in range(ROWS):
+            for c_ in range(COLS):
+                x, y = (c_ - cx) / 13.0, -(r_ - cy) / 12.0
+                inside[r_, c_] = (x * x + y * y - 1) ** 3 - x * x * y ** 3 <= 0
+        outline = inside & ~(np.roll(inside, 1, 0) & np.roll(inside, -1, 0) & np.roll(inside, 1, 1) & np.roll(inside, -1, 1))
+        self.kind[outline] = WALL
+        # Eingang an der Herzspitze
+        tip_r = max(r_ for r_ in range(ROWS) if inside[r_].any())
+        cmid = int(round(cx))
+        for r_ in range(tip_r - 2, tip_r + 1):
+            for c_ in range(cmid - 2, cmid + 3):
+                if self.kind[r_, c_] == WALL:
+                    self.kind[r_, c_] = GREEN
+        for r_ in range(tip_r - 7, tip_r - 1):  # Korridor ins Herz
+            for c_ in range(cmid - 1, cmid + 2):
+                if inside[r_, c_] and self.kind[r_, c_] == GREEN:
+                    self.kind[r_, c_] = EMPTY
+        for dc, kd in ((-2, PLUS), (0, PLUS), (2, PLUS)):
+            self.kind[tip_r - 8, cmid + dc] = kd
+        # Raute im Herzen, Eingang oben
+        dr, dcy = 5, 20
+        for r_ in range(ROWS):
+            for c_ in range(COLS):
+                if abs(r_ - dcy) + abs(c_ - cx) in (dr - 0.5, dr + 0.5) or abs(abs(r_ - dcy) + abs(c_ - cx) - dr) < 0.6:
+                    self.kind[r_, c_] = WALL
+        for r_ in range(dcy - dr - 1, dcy - dr + 2):
+            for c_ in range(cmid - 1, cmid + 2):
+                if self.kind[r_, c_] == WALL:
+                    self.kind[r_, c_] = GREEN
+        self.kind[dcy, cmid] = MULT
+        self.kind[dcy, cmid - 2] = PLUS
+        self.kind[dcy, cmid + 2] = PLUS
+        # Power-ups außerhalb des Herzens (unten zuerst) + ein paar im Herzen
+        out_cells = [(r_, c_) for r_ in range(ROWS) for c_ in range(COLS) if self.kind[r_, c_] == GREEN and not inside[r_, c_]]
+        rng.shuffle(out_cells)
+        low = [rc for rc in out_cells if rc[0] >= ROWS - 8][:3]
+        for rc in low + out_cells[:n_outer_plus]:
+            self.kind[rc] = PLUS
+        top = [rc for rc in out_cells if rc[0] < 9 and self.kind[rc] == GREEN]
+        for rc in top[:2]:
+            self.kind[rc] = MULT
+        for rc in top[2:5]:
+            self.kind[rc] = PLUS
+        in_cells = [(r_, c_) for r_ in range(ROWS) for c_ in range(COLS) if self.kind[r_, c_] == GREEN and inside[r_, c_]
+                    and abs(r_ - dcy) + abs(c_ - cx) > dr + 1]
+        rng.shuffle(in_cells)
+        for rc in in_cells[:4]:
+            self.kind[rc] = PLUS
+
+
+class NeonRenderer(BreakerRenderer):
+    def __init__(self, sim):
+        super().__init__(sim)
+        s = CELL * SS
+        self.tiles = {GREEN: _tile(NEON["block"], NEON["block_d"], s), PLUS: _tile(NEON["plus"], (140, 100, 10), s),
+                      MULT: _tile(NEON["mult"], (10, 100, 130), s), WALL: _tile(NEON["wall"], NEON["wall_d"], s)}
+
+    def frame(self, fi):
+        global BG, GREEN_C, PLUS_C, MULT_C
+        BG, GREEN_C, PLUS_C, MULT_C = NEON["bg"], NEON["block"], NEON["plus"], NEON["mult"]
+        im = super().frame(fi)
+        # Neon-Glow
+        from PIL import ImageFilter
+        arr = np.asarray(im, np.float32)
+        g = im.resize((W1 // 5, H1 // 5), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4))
+        glow = np.asarray(g.resize((W1, H1), Image.BILINEAR), np.float32)
+        arr = arr + np.clip(glow - 30, 0, 255) * 0.55
+        return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+
+
 SEED = 23
-BREAKER = {"k02_block_breaker_waende": lambda: BreakerSim(SEED).run()}
+BREAKER = {"k02_block_breaker_waende": lambda: BreakerSim(SEED).run(),
+           "k03_neon_herz": lambda: HeartBreakerSim(SEED_HEART).run()}
+SEED_HEART = 10
 
 if __name__ == "__main__":
     import sys
     preview = "--preview" in sys.argv
-    for name, mk in BREAKER.items():
+    names = [a for a in sys.argv[1:] if not a.startswith("--")] or list(BREAKER)
+    for name in names:
+        mk = BREAKER[name]
         sim = mk()
         if preview:
             ts = [0.0, 3.0, 8.0, 14.0, 20.0, 26.0, 32.0, 38.0, 44.0, sim.total - 3, sim.total - 0.1]
@@ -416,3 +508,4 @@ if __name__ == "__main__":
             out = f"output/{name}_vertical.mp4"
             render(sim, name, out)
             print(out, round(sim.total, 1))
+

@@ -28,13 +28,18 @@ SR = 44100
 
 # Spielfeld (Bildschirm-Pixel), rechts bleibt Platz für die TikTok-Buttons
 FX0, FY0, FX1, FY1 = 40, 240, 930, 1420
-CELL = 18
+CELL = 22
 COLS = (FX1 - FX0) // CELL           # 49
-ROWS = 52
+ROWS = 43
 BX0 = FX0 + ((FX1 - FX0) - COLS * CELL) // 2
 BY0 = FY0
 
-EMPTY, GREEN, STEEL, PLUS, MULT = 0, 1, 2, 3, 4
+EMPTY, GREEN, STEEL, PLUS, MULT, WALL = 0, 1, 2, 3, 4, 5
+WALL_C, WALL_D = (128, 128, 136), (70, 70, 78)
+# unzerstörbare Wände wie im Vorbild: waagrechte Lagen mit schmaler Lücke + Korridor-Stücke
+WALL_ROWS = [(34, 30, 36), (25, 3, 9), (16, 17, 23), (7, 31, 37)]  # (Reihe, Lücke von, Lücke bis)
+WALL_SEGS = [("v", 29, 29, 34), ("v", 37, 27, 34), ("v", 10, 20, 25), ("v", 3, 18, 25), ("v", 17, 11, 16),
+             ("v", 24, 11, 16), ("h", 28, 18, 26)]
 GREEN_C, GREEN_D = (46, 150, 70), (22, 70, 35)
 STEEL_C = (150, 150, 158)
 PLUS_C, MULT_C = (255, 210, 40), (60, 220, 240)
@@ -42,33 +47,43 @@ BG = (30, 28, 34)
 
 
 class BreakerSim:
-    def __init__(self, seed, n_plus=26, n_mult=5, cap=160, speed=1150.0, r=6.0, outro=3.0, n_start=2, n_low=4):
+    def __init__(self, seed, cap=220, speed=1900.0, r=7.0, outro=3.0, n_start=3, n_low=4):
         self.rng = random.Random(seed)
         rng = self.rng
         self.kind = np.full((ROWS, COLS), GREEN, np.uint8)
         self.hp = np.ones((ROWS, COLS), np.uint8)
-        # Stahlwände: ein paar waagrechte/senkrechte Linien wie im Original
-        for _ in range(5):
-            if rng.random() < 0.6:
-                rr, c0 = rng.randrange(8, ROWS - 4), rng.randrange(2, COLS - 20)
-                cs = slice(c0, c0 + rng.randrange(10, 20))
-                self.kind[rr, cs] = STEEL
-                self.hp[rr, cs] = 3
-            else:
-                cc, r0 = rng.randrange(4, COLS - 4), rng.randrange(6, ROWS - 18)
-                rs = slice(r0, r0 + rng.randrange(8, 16))
-                self.kind[rs, cc] = STEEL
-                self.hp[rs, cc] = 3
-        cells = [(r_, c_) for r_ in range(ROWS) for c_ in range(COLS) if self.kind[r_, c_] == GREEN]
-        rng.shuffle(cells)
-        low = [rc for rc in cells if rc[0] >= ROWS - 10]  # ein paar Power-ups in den unteren Reihen -> früher Schwung
-        for r_, c_ in low[:n_low]:
-            self.kind[r_, c_] = PLUS
-        cells = [rc for rc in cells if self.kind[rc] == GREEN]
-        for r_, c_ in cells[:n_plus]:
-            self.kind[r_, c_] = PLUS
-        for r_, c_ in cells[n_plus:n_plus + n_mult]:
-            self.kind[r_, c_] = MULT
+        for row, g0, g1 in WALL_ROWS:
+            for c_ in range(COLS):
+                if not (g0 <= c_ < g1):
+                    self.kind[row, c_] = WALL
+        for kd, a, b0, b1 in WALL_SEGS:
+            for k_ in range(b0, b1):
+                if kd == "v":
+                    self.kind[k_, a] = WALL
+                else:
+                    self.kind[a, k_] = WALL
+        # Korridor hinter jeder Lücke (wie im Vorbild schon frei) + Power-ups am Korridor-Ende = Durchbruch-Moment
+        for row, g0, g1 in WALL_ROWS:
+            mid = (g0 + g1) // 2
+            top = max(0, row - 5)
+            for r_ in range(top, row):
+                for c_ in range(g0, g1):
+                    if self.kind[r_, c_] == GREEN:
+                        self.kind[r_, c_] = EMPTY
+            for dc, kd in ((-1, PLUS), (0, MULT), (1, PLUS)):
+                c_ = mid + dc * 2
+                if 0 <= top - 1 < ROWS and 0 <= c_ < COLS and self.kind[top - 1, c_] == GREEN:
+                    self.kind[top - 1, c_] = kd
+        # Power-ups je Abteil (zwischen den Wandlagen): unten wenige, oben belohnen sie den Durchbruch
+        bounds = [ROWS] + [w[0] for w in WALL_ROWS] + [-1]
+        plan = [(n_low, 1), (2, 0), (2, 0), (2, 0), (1, 0)]
+        for (hi, lo), (np_, nm) in zip(zip(bounds, bounds[1:]), plan):
+            cells = [(r_, c_) for r_ in range(lo + 1, hi) for c_ in range(COLS) if self.kind[r_, c_] == GREEN]
+            rng.shuffle(cells)
+            for r_, c_ in cells[:np_]:
+                self.kind[r_, c_] = PLUS
+            for r_, c_ in cells[np_:np_ + nm]:
+                self.kind[r_, c_] = MULT
         self.cap, self.speed, self.r, self.outro = cap, speed, r, outro
         self.balls = []
         for j in range(n_start):  # Start: Bälle schießen von unten ins Feld
@@ -164,7 +179,8 @@ class BreakerSim:
                     b[2] -= 2 * vn * nx
                     b[3] -= 2 * vn * ny
             for rr, cc in touched:
-                self.hit_brick(rr, cc, b)
+                if self.kind[rr, cc] != WALL:
+                    self.hit_brick(rr, cc, b)
         # flache Winkel vermeiden (sonst ewiges Hin und Her)
         if abs(b[3]) < 0.18:
             b[3] = math.copysign(0.18, b[3] if b[3] else 1.0)
@@ -187,7 +203,7 @@ class BreakerSim:
                 for b in list(self.balls):
                     self.step_ball(b, dist / n_sub)
                 self.t += frame_dt / n_sub
-            if self.clear_t is None and not (self.kind != EMPTY).any():
+            if self.clear_t is None and not ((self.kind != EMPTY) & (self.kind != WALL)).any():
                 self.clear_t = self.t
                 self.finish_t = self.t + 2.5
                 self.ev("clear")
@@ -217,7 +233,8 @@ class BreakerRenderer:
         self.sim = sim
         s = CELL * SS
         self.tiles = {GREEN: _tile(GREEN_C, GREEN_D, s), STEEL: _tile(STEEL_C, (70, 70, 78), s),
-                      PLUS: _tile(PLUS_C, (150, 110, 10), s), MULT: _tile(MULT_C, (20, 110, 130), s)}
+                      PLUS: _tile(PLUS_C, (150, 110, 10), s), MULT: _tile(MULT_C, (20, 110, 130), s),
+                      WALL: _tile(WALL_C, WALL_D, s)}
         self.broken_t = [b[0] for b in sim.broken]
 
     def frame(self, fi):
@@ -242,7 +259,7 @@ class BreakerRenderer:
         im = Image.fromarray(img, "RGB")
         d = ImageDraw.Draw(im)
         # Symbole auf Power-ups, Risse im Stahl
-        for rr, cc in np.argwhere(kind >= STEEL):
+        for rr, cc in np.argwhere((kind >= STEEL) & (kind != WALL)):
             x0, y0 = (BX0 + cc * CELL) * k, (BY0 + rr * CELL) * k
             cx, cy = x0 + s / 2, y0 + s / 2
             kd = kind[rr, cc]
@@ -285,39 +302,29 @@ class BreakerRenderer:
         return im.reduce(SS)
 
 
-# ------------------------------------------------------------------ Klang (ASMR)
+# ------------------------------------------------------------------ Klang: nur leichtes Ploppen
 
 _cache = {}
 
 
-def tick(f, dull=False):
-    key = (round(f, 1), dull)
+def plop(f, big=False):
+    """Weiches Plopp wie eine kleine Blase: kurzer Sinus mit schnellem Tonhöhen-Sprung, ohne Melodie."""
+    key = (round(f), big)
     if key not in _cache:
-        rng = np.random.default_rng(int(f))
-        n = int(SR * 0.2)
+        n = int(SR * (0.16 if big else 0.09))
         t = np.arange(n) / SR
-        click = np.convolve(rng.standard_normal(n), np.ones(4) / 4, mode="same") * np.exp(-t * 300)
-        dec = 45 if dull else 30
-        body = np.sin(2 * np.pi * f * t) * np.exp(-t * dec) + 0.25 * np.sin(2 * np.pi * f * 2.4 * t) * np.exp(-t * 70)
-        _cache[key] = (click * (0.8 if dull else 0.5) + body * 0.6) * 0.35
-    return _cache[key]
-
-
-def chime(f):
-    key = ("c", round(f, 1))
-    if key not in _cache:
-        n = int(SR * 1.6)
-        t = np.arange(n) / SR
-        s = np.sin(2 * np.pi * f * t) * np.exp(-t * 2.5) + 0.3 * np.sin(2 * np.pi * 2 * f * t) * np.exp(-t * 5)
-        _cache[key] = s * np.minimum(t / 0.004, 1) * 0.3
+        fr = f * (0.7 + 0.6 * (1 - np.exp(-t * (60 if big else 90))))
+        s = np.sin(2 * np.pi * np.cumsum(fr) / SR) * np.exp(-t * (30 if big else 55))
+        s *= np.minimum(t / 0.002, 1)
+        _cache[key] = s * (0.5 if big else 0.32)
     return _cache[key]
 
 
 def build_audio(sim, path):
     total = sim.total
     n = int(SR * total)
-    out = np.zeros(n + SR * 3)
-    penta = [0, 2, 4, 7, 9]
+    out = np.zeros(n + SR * 2)
+    rng = random.Random(5)
     last = -1.0
 
     def put(t, s, vol):
@@ -328,28 +335,17 @@ def build_audio(sim, path):
 
     for t, kind, d in sim.events:
         if kind == "break":
-            if t - last < 0.03:  # höchstens ~33 Klicks pro Sekunde
+            if t - last < 0.028:
                 continue
             last = t
-            row = ROWS - 1 - d["row"]
-            semi = penta[row % 5] + 12 * ((row // 5) % 3)
-            put(t, tick(392.0 * 2 ** (semi / 12)), 0.5)
-        elif kind == "steel":
-            put(t, tick(180.0, dull=True), 0.5)
-        elif kind == "plus":
-            for j, f in enumerate((659.25, 783.99, 1046.5)):
-                put(t + j * 0.06, chime(f), 0.45)
-        elif kind == "mult":
-            for j, f in enumerate((523.25, 659.25, 783.99, 1046.5, 1318.5)):
-                put(t + j * 0.05, chime(f), 0.5)
-        elif kind == "clear":
-            for j, f in enumerate((261.63, 329.63, 392.0, 523.25, 659.25)):
-                put(t + j * 0.12, chime(f), 0.6)
+            put(t, plop(rng.choice((520, 560, 600, 640, 680))), 0.6)
+        elif kind in ("plus", "mult"):
+            put(t, plop(330, big=True), 0.9)
     out = out[:n]
-    mix_ = out * 0.9 + reverb(out, 1.0) * 0.15
+    mix_ = out + reverb(out, 0.6) * 0.08
     mix_ *= np.clip((total - np.arange(n) / SR) / 1.2, 0, 1)
     peak = np.max(np.abs(mix_)) or 1
-    mix_ = np.tanh(mix_ / peak * 1.3) * 0.9
+    mix_ = np.tanh(mix_ / peak * 1.2) * 0.9
     st = np.stack([mix_, mix_], axis=1)
     with wave.open(path, "wb") as w:
         w.setnchannels(2)
@@ -404,8 +400,8 @@ def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4):
                         "-movflags", "+faststart", out_path], check=True)
 
 
-SEED = 14
-BREAKER = {"k01_block_breaker": lambda: BreakerSim(SEED).run()}
+SEED = 23
+BREAKER = {"k02_block_breaker_waende": lambda: BreakerSim(SEED).run()}
 
 if __name__ == "__main__":
     import sys

@@ -195,6 +195,11 @@ class BreakerSim:
         frame_dt = 1 / FPS
         while True:
             sp = self.speed
+            ramp = getattr(self, "ramp", None)
+            if ramp:  # langsam starten, mit der Zeit schneller
+                v0, v1, tr = ramp
+                p_ = min(1.0, self.t / tr)
+                sp = v0 + (v1 - v0) * p_ * p_ * (3 - 2 * p_)
             if self.clear_t is not None:  # Ausklang: langsamer werden
                 sp *= max(0.0, 1 - (self.t - self.clear_t) / 2.5) ** 1.3
             dist = sp * frame_dt
@@ -374,7 +379,8 @@ def _chunk(args):
 
 def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4):
     global _R
-    _R = NeonRenderer(sim) if isinstance(sim, HeartBreakerSim) else BreakerRenderer(sim)
+    _R = (GlossyRenderer(sim) if isinstance(sim, SlowHeartSim) else NeonRenderer(sim) if isinstance(sim, HeartBreakerSim)
+          else BreakerRenderer(sim))
     n = len(sim.frames)
     if preview_dir:
         os.makedirs(preview_dir, exist_ok=True)
@@ -488,9 +494,154 @@ class NeonRenderer(BreakerRenderer):
         return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
 
 
+
+# ------------------------------------------------------------------ Glänzende Blöcke + Licht-Reflexion
+
+def glossy_tile(color, size, bg, rim=(255, 255, 255), neon=False):
+    """Bonbon-artiger Block: abgerundet, Verlauf, Fase, Glanz oben, Glanzpunkt. 4x gerechnet, dann verkleinert."""
+    S = size * 4
+    yy, xx = np.mgrid[0:S, 0:S].astype(np.float32) + 0.5
+    m = S * 0.07                      # Fuge
+    rad = S * 0.22                    # Eckenradius
+    x0, y0, x1, y1 = m, m, S - m, S - m
+    cx = np.clip(xx, x0 + rad, x1 - rad)
+    cy = np.clip(yy, y0 + rad, y1 - rad)
+    dist = np.hypot(xx - cx, yy - cy) - rad          # <0 innen
+    alpha = np.clip(-dist / 3.0 + 0.5, 0, 1)
+    u = (xx - x0) / (x1 - x0)
+    v = (yy - y0) / (y1 - y0)
+    c = np.array(color, np.float32)
+    base = c * (1.18 - 0.42 * v)[..., None]
+    edge = np.clip(-dist / (S * 0.12), 0, 1)          # 0 am Rand -> 1 innen
+    bevel = (1 - edge) * (0.55 - u - v)               # links/oben hell, rechts/unten dunkel
+    col = base + bevel[..., None] * 140
+    gloss = np.clip(1 - v / 0.48, 0, 1) ** 1.6 * (edge > 0.25) * 0.38    # Glanz auf der oberen Hälfte
+    col = col + gloss[..., None] * (255 - col)
+    spec = np.exp(-(((u - 0.27) / 0.1) ** 2 + ((v - 0.2) / 0.07) ** 2)) * 0.85  # Glanzpunkt
+    col = col + spec[..., None] * (255 - col)
+    rimline = np.exp(-((dist + S * 0.025) / (S * 0.02)) ** 2) * 0.35        # feine helle Kante
+    col = col + rimline[..., None] * (np.array(rim, np.float32) - col)
+    if neon:
+        core = np.exp(-(((v - 0.5) / 0.22) ** 2)) * 0.35
+        col = col + core[..., None] * (255 - col)
+    bgc = np.array(bg, np.float32)
+    out = bgc + (np.clip(col, 0, 255) - bgc) * alpha[..., None]
+    im = Image.fromarray(out.astype(np.uint8), "RGB").resize((size, size), Image.LANCZOS)
+    return np.asarray(im)
+
+
+class GlossyRenderer(BreakerRenderer):
+    def __init__(self, sim):
+        super().__init__(sim)
+        s = CELL * SS
+        bg = NEON["bg"]
+        self.tiles = {GREEN: glossy_tile(NEON["block"], s, bg), PLUS: glossy_tile(NEON["plus"], s, bg),
+                      MULT: glossy_tile(NEON["mult"], s, bg), WALL: glossy_tile(NEON["wall"], s, bg, neon=True)}
+        self.solid = {k: np.any(np.abs(t.astype(int) - np.array(bg)) > 12, axis=2) for k, t in self.tiles.items()}
+        fy, fx = np.mgrid[0:ROWS * s, 0:COLS * s].astype(np.float32)
+        self.diag = (fx + fy * 0.55) / s  # für die wandernde Licht-Reflexion
+        self.ball_spr = self._ball_sprite(int(sim.r * SS))
+
+    def _ball_sprite(self, r):
+        n = r * 6
+        yy, xx = np.mgrid[0:n, 0:n].astype(np.float32) - n / 2
+        d = np.hypot(xx, yy)
+        glow = np.clip(1 - d / (r * 2.6), 0, 1) ** 2 * 0.55
+        core = np.clip(r - d + 0.5, 0, 1)
+        hl = np.exp(-(((xx + r * 0.35) / (r * 0.35)) ** 2 + ((yy + r * 0.35) / (r * 0.35)) ** 2))
+        a = np.maximum(glow, core)
+        rgb = np.zeros((n, n, 3), np.float32)
+        rgb[:] = (235, 225, 255)
+        rgb = rgb * (1 - 0.25 * core[..., None] * (yy / r).clip(0, 1)[..., None]) + hl[..., None] * 40
+        return Image.fromarray(np.dstack([np.clip(rgb, 0, 255), a * 255]).astype(np.uint8), "RGBA")
+
+    def frame(self, fi):
+        global BG, GREEN_C, PLUS_C, MULT_C
+        BG, GREEN_C, PLUS_C, MULT_C = NEON["bg"], NEON["block"], NEON["plus"], NEON["mult"]
+        sim = self.sim
+        kind, hp, balls = sim.frames[fi]
+        t = (fi + 1) / FPS
+        k = SS
+        s = CELL * k
+        img = np.zeros((H1 * k, W1 * k, 3), np.uint8)
+        img[:] = (8, 5, 16)
+        img[FY0 * k:FY1 * k, FX0 * k:FX1 * k] = NEON["bg"]
+        field = np.zeros((ROWS * s, COLS * s, 3), np.uint8)
+        field[:] = NEON["bg"]
+        solid = np.zeros((ROWS * s, COLS * s), bool)
+        for kd, tile in self.tiles.items():
+            mask = kind == kd
+            if not mask.any():
+                continue
+            big = np.kron(mask, np.ones((s, s), bool))
+            field[big] = np.tile(tile, (ROWS, COLS, 1))[big]
+            solid |= big & np.tile(self.solid[kd], (ROWS, COLS))
+        # Licht-Reflexion: diagonales Glanzband wandert alle 5 s über das Feld
+        pos = ((t % 5.0) / 5.0) * (COLS + ROWS * 0.55 + 16) - 8
+        band = np.exp(-((self.diag - pos) / 2.2) ** 2) * 0.32
+        f = field.astype(np.float32)
+        f += (band * solid)[..., None] * (255 - f)
+        field = f.astype(np.uint8)
+        img[BY0 * k:BY0 * k + ROWS * s, BX0 * k:BX0 * k + COLS * s] = field
+        im = Image.fromarray(img, "RGB")
+        d = ImageDraw.Draw(im)
+        for rr, cc in np.argwhere((kind == PLUS) | (kind == MULT)):
+            x0, y0 = (BX0 + cc * CELL) * k, (BY0 + rr * CELL) * k
+            cx, cy = x0 + s / 2, y0 + s / 2 + s * 0.03
+            w = int(s * 0.13)
+            ic = (90, 50, 0) if kind[rr, cc] == PLUS else (0, 80, 40)
+            if kind[rr, cc] == PLUS:
+                d.line([cx - s * 0.22, cy, cx + s * 0.22, cy], fill=ic, width=w)
+                d.line([cx, cy - s * 0.22, cx, cy + s * 0.22], fill=ic, width=w)
+            else:
+                d.line([cx - s * 0.19, cy - s * 0.19, cx + s * 0.19, cy + s * 0.19], fill=ic, width=w)
+                d.line([cx - s * 0.19, cy + s * 0.19, cx + s * 0.19, cy - s * 0.19], fill=ic, width=w)
+        import bisect
+        lo = bisect.bisect_left(self.broken_t, t - 0.22)
+        hi = bisect.bisect_right(self.broken_t, t)
+        cols = {GREEN: NEON["block"], PLUS: NEON["plus"], MULT: NEON["mult"]}
+        for t0, rr, cc, kd in sim.broken[lo:hi]:  # Block zerplatzt: hell aufleuchten, schrumpfen
+            e = (t - t0) / 0.22
+            x0, y0 = (BX0 + cc * CELL) * k, (BY0 + rr * CELL) * k
+            m = s * 0.5 * e
+            c = tuple(int(v + (255 - v) * (1 - e) * 0.7) for v in cols.get(kd, NEON["block"]))
+            d.rounded_rectangle([x0 + m, y0 + m, x0 + s - m, y0 + s - m], radius=max(1, int(s * 0.2 * (1 - e))), fill=c)
+        lo2 = bisect.bisect_left(self.broken_t, t - 0.6)
+        for t0, rr, cc, kd in sim.broken[lo2:hi]:
+            if kd in (PLUS, MULT):
+                e = (t - t0) / 0.6
+                cx, cy = (BX0 + (cc + 0.5) * CELL) * k, (BY0 + (rr + 0.5) * CELL) * k
+                R = (10 + 60 * e) * k
+                col = NEON["plus"] if kd == PLUS else NEON["mult"]
+                d.ellipse([cx - R, cy - R, cx + R, cy + R], outline=tuple(int(v * (1 - e)) for v in col), width=3 * k)
+        rgba = im.convert("RGBA")
+        sp = self.ball_spr
+        for x, y in balls:
+            rgba.alpha_composite(sp, (int(x * k - sp.width / 2), int(y * k - sp.height / 2)))
+        out = rgba.convert("RGB").reduce(SS)
+        from PIL import ImageFilter
+        arr = np.asarray(out, np.float32)
+        g = out.resize((W1 // 5, H1 // 5), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4))
+        glow = np.asarray(g.resize((W1, H1), Image.BILINEAR), np.float32)
+        arr = arr + np.clip(glow - 40, 0, 255) * 0.4
+        return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+
+
+class SlowHeartSim(HeartBreakerSim):
+    """Wie das Herz-Level, aber: Start mit 1 Ball, langsam beginnend (gut zu verfolgen), Tempo steigt mit der
+    Zeit, unten nur ein Power-up -> die Ballzahl baut sich nach und nach auf."""
+
+    def __init__(self, seed, ramp=(620.0, 1450.0, 32.0), **kw):
+        kw.setdefault("n_start", 1)
+        kw.setdefault("n_low", 1)
+        super().__init__(seed, **kw)
+        self.ramp = ramp
+
+
 SEED = 23
 BREAKER = {"k02_block_breaker_waende": lambda: BreakerSim(SEED).run(),
-           "k03_neon_herz": lambda: HeartBreakerSim(SEED_HEART).run()}
+           "k03_neon_herz": lambda: HeartBreakerSim(SEED_HEART).run(),
+           "k04_neon_herz_glanz": lambda: SlowHeartSim(20, ramp=(700.0, 1800.0, 22.0), n_outer_plus=14, cap=320).run()}
 SEED_HEART = 10
 
 if __name__ == "__main__":

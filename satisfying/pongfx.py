@@ -541,12 +541,16 @@ def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4):
 SEED_PONG = 7
 ORANGE_BLAU = dict(team_c=[(255, 135, 30), (45, 120, 255)], ball_c=[(150, 205, 255), (255, 200, 120)],
                    names=["ORANGE", "BLAU"])
+PINK_GRUEN = dict(team_c=[(255, 55, 160), (50, 225, 105)], ball_c=[(175, 255, 195), (255, 185, 225)],
+                  names=["PINK", "GRÜN"])
 PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run(),
         "p02_orange_vs_blau": lambda: PongFx(12, power=(1.0, 0.36), split="lr", konter=(0.25, 0.95, 9.0),
                                              ramp=(560.0, 1450.0, 24.0), **ORANGE_BLAU).run(),
         # Hin und Her: wer unter 37 % fällt, spaltet alle Bälle (bis 30 s) -> Führungswechsel, dann entscheidet der Schwung
         "p03_hin_und_her": lambda: PongFx(27, power=(1.0, 0.6), split="lr", konter=(0.37, 0.95, 5.5, 30.0),
-                                          ramp=(560.0, 1700.0, 24.0), **ORANGE_BLAU).run()}
+                                          ramp=(560.0, 1700.0, 24.0), **ORANGE_BLAU).run(),
+        "p04_pink_vs_gruen": lambda: PongFx(20, power=(1.0, 0.6), split="lr", konter=(0.37, 0.95, 5.5, 30.0),
+                                            ramp=(560.0, 1700.0, 24.0), **PINK_GRUEN).run()}
 
 if __name__ == "__main__":
     import sys

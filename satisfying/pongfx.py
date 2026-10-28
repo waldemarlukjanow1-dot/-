@@ -38,7 +38,7 @@ BALL_C = [(120, 245, 255), (240, 150, 255)]      # Ball in der Gegenfarbe, gut s
 
 class PongFx:
     def __init__(self, seed, power=(1.0, 0.3), n_max=40, n_ramp=34.0, ramp=(560.0, 1250.0, 26.0), r=9.0, max_t=75.0, ko=0.04,
-                 split="tb", team_c=None, ball_c=None, names=None, konter=None):
+                 split="tb", team_c=None, ball_c=None, names=None, konter=None, lag=0.0):
         self.rng = random.Random(seed)
         self.state = np.zeros((ROWS, COLS), np.uint8)
         self.split = split
@@ -49,6 +49,7 @@ class PongFx:
         self.team_c, self.ball_c, self.names = team_c or TEAM_C, ball_c or BALL_C, names
         # Konter: (Schwelle, Bonus, Abklingzeit) – einmal pro Runde, wenn ein Team unter die Schwelle fällt
         self.konter, self.konter_t, self.konter_team = konter, None, None
+        self.lag, self.share_hist = lag, []   # Verstärkung reagiert verzögert auf die Lage
         self.ko = ko
         self.power, self.n_max, self.n_ramp, self.ramp, self.r, self.max_t = power, n_max, n_ramp, ramp, r, max_t
         self.balls = []      # [x, y, vx, vy, team, alive]
@@ -134,6 +135,9 @@ class PongFx:
     # ---------------------------------------------------------------- Schwung-Regel
     def targets(self):
         share = float((self.state == 0).mean())
+        self.share_hist.append(share)
+        if self.lag:
+            share = self.share_hist[max(0, len(self.share_hist) - 1 - int(self.lag * FPS))]
         N = 2 + (self.n_max - 2) * min(1.0, self.t / self.n_ramp)
         p = self.power[0] + self.power[1] * self.t   # Schwung wird mit der Zeit stärker
         sa, sb = share, 1 - share
@@ -153,10 +157,13 @@ class PongFx:
         return [i for i, b in enumerate(self.balls) if b[5] and b[4] == team]
 
     def manage(self):
-        if self.konter and self.konter_t is None and self.t > 6:
+        # Konter: (Schwelle, Bonus, Abklingzeit[, bis Zeitpunkt]) – mit Ende-Zeit auch mehrfach möglich
+        until = self.konter[3] if self.konter and len(self.konter) > 3 else None
+        ready = self.konter_t is None if until is None else self.t < until
+        if self.konter and ready and self.t > 6:
             share = float((self.state == 0).mean())
             for team, sh in ((0, share), (1, 1 - share)):
-                if sh < self.konter[0]:
+                if sh < self.konter[0] and not (self.konter_team == team and self.t - self.konter_t < 6):
                     self.konter_t, self.konter_team = self.t, team
                     self.events.append((self.t, "konter", {"team": team}))
                     for i in self.alive(team):   # jeder eigene Ball spaltet sich
@@ -420,14 +427,6 @@ class PongFxRenderer:
         banner([("Welche Farbe gewinnt?", 64, (255, 255, 255)),
                 (f"{n0} vs {n1}", 50, [(n0, self.tc[0]), (" vs ", (255, 255, 255)), (n1, self.tc[1])])],
                a, (FY0 + FY1) / 2 - 40)
-        # Konter-Einblendung
-        if sim.konter_t is not None:
-            e = t - sim.konter_t
-            if 0 <= e < 2.2:
-                a = min(1.0, e / 0.15) * min(1.0, (2.2 - e) / 0.5)
-                sc = 1.0 + 0.25 * max(0.0, 1 - e / 0.25)
-                tm = sim.konter_team
-                banner([("KONTER!", 70, self.tc[tm])], a, (FY0 + FY1) / 2 - 40, sc)
         # Sieger
         if sim.clear_t is not None and t > sim.clear_t + 0.4:
             a = min(1.0, (t - sim.clear_t - 0.4) / 0.6)
@@ -544,7 +543,10 @@ ORANGE_BLAU = dict(team_c=[(255, 135, 30), (45, 120, 255)], ball_c=[(150, 205, 2
                    names=["ORANGE", "BLAU"])
 PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run(),
         "p02_orange_vs_blau": lambda: PongFx(12, power=(1.0, 0.36), split="lr", konter=(0.25, 0.95, 9.0),
-                                             ramp=(560.0, 1450.0, 24.0), **ORANGE_BLAU).run()}
+                                             ramp=(560.0, 1450.0, 24.0), **ORANGE_BLAU).run(),
+        # Hin und Her: wer unter 37 % fällt, spaltet alle Bälle (bis 30 s) -> Führungswechsel, dann entscheidet der Schwung
+        "p03_hin_und_her": lambda: PongFx(27, power=(1.0, 0.6), split="lr", konter=(0.37, 0.95, 5.5, 30.0),
+                                          ramp=(560.0, 1700.0, 24.0), **ORANGE_BLAU).run()}
 
 if __name__ == "__main__":
     import sys

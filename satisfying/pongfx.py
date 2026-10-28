@@ -53,7 +53,7 @@ class PongFx:
         self.ko = ko
         self.power, self.n_max, self.n_ramp, self.ramp, self.r, self.max_t = power, n_max, n_ramp, ramp, r, max_t
         self.balls = []      # [x, y, vx, vy, team, alive]
-        self.flips = []      # (t, row, col, neues Team)
+        self.flips = []      # (t, row, col, neues Team, altes Team)
         self.events = []     # (t, art, daten)
         self.births, self.deaths = [], []   # (t, ball-index)
         self.frames = []
@@ -128,8 +128,9 @@ class PongFx:
         L = math.hypot(vx, vy)
         b[2], b[3] = vx / L, vy / L
         # genau EIN Feld pro Berührung
+        old = int(self.state[rr, cc])
         self.state[rr, cc] = b[4]
-        self.flips.append((self.t, rr, cc, b[4]))
+        self.flips.append((self.t, rr, cc, b[4], old))
         self.events.append((self.t, "flip", {"team": b[4]}))
 
     # ---------------------------------------------------------------- Schwung-Regel
@@ -246,26 +247,28 @@ class PongFxRenderer:
         self.sim = sim
         self.tc, self.bc = sim.team_c, sim.ball_c
         k, s = SS, CELL * SS
-        self.tiles = [glossy_tile(self.tc[0], s, BG), glossy_tile(self.tc[1], s, BG)]
+        self.nt = nt = len(self.tc)
+        self.tiles = [glossy_tile(c, s, BG) for c in self.tc]
         self.solid = [np.any(np.abs(t.astype(int) - np.array(BG)) > 12, axis=2) for t in self.tiles]
-        self.full = [np.tile(self.tiles[i], (ROWS, COLS, 1)) for i in (0, 1)]
-        self.fsolid = [np.tile(self.solid[i], (ROWS, COLS)) for i in (0, 1)]
+        self.full = [np.tile(self.tiles[i], (ROWS, COLS, 1)) for i in range(nt)]
+        self.fsolid = [np.tile(self.solid[i], (ROWS, COLS)) for i in range(nt)]
         fy, fx = np.mgrid[0:ROWS * s, 0:COLS * s].astype(np.float32)
         self.diag = (fx + fy * 0.55) / s
         yy, xx = np.mgrid[0:H1 * k, 0:W1 * k].astype(np.float32) / k
         vig = 0.45 + 0.55 * np.exp(-(((xx - W1 / 2) / W1) ** 2 + ((yy - H1 * 0.45) / H1) ** 2) * 3.0)
         self.base = (np.array((8, 5, 16), np.float32) * vig[..., None]).astype(np.uint8)
         self.flip_t = [f[0] for f in sim.flips]
-        self.ball_spr = [self._ball_sprite(int(sim.r * k), self.bc[i], self.tc[1 - i]) for i in (0, 1)]
+        glow = getattr(sim, "ball_glow", None) or [self.tc[1 - i] for i in range(nt)]
+        self.ball_spr = [self._ball_sprite(int(sim.r * k), self.bc[i], glow[i]) for i in range(nt)]
         yy, xx = np.mgrid[-24:24, -24:24].astype(np.float32)
         self.flash = np.exp(-(xx ** 2 + yy ** 2) / (2 * 8.0 ** 2))[..., None] * 0.8
         self.font = ImageFont.truetype("/usr/share/fonts/opentype/inter/Inter-Bold.otf", 26)
         # Partikel je umgefärbtem Feld
         P = []
-        for t0, rr, cc, team in sim.flips:
+        for t0, rr, cc, team, old in sim.flips:
             rng = random.Random(rr * 977 + cc * 31 + int(t0 * 1000))
             cx, cy = FX0 + (cc + 0.5) * CELL, FY0 + (rr + 0.5) * CELL
-            col = self.tc[1 - team]          # Splitter in der alten Farbe
+            col = self.tc[old]               # Splitter in der alten Farbe
             for _ in range(4):
                 a = rng.uniform(0, 2 * math.pi)
                 v = rng.uniform(80, 260)
@@ -296,7 +299,7 @@ class PongFxRenderer:
         field = np.zeros((ROWS * s, COLS * s, 3), np.uint8)
         field[:] = BG
         solid = np.zeros((ROWS * s, COLS * s), bool)
-        for team in (0, 1):
+        for team in range(self.nt):
             big = np.repeat(np.repeat(state == team, s, 0), s, 1)
             field[big] = self.full[team][big]
             solid |= big & self.fsolid[team]
@@ -315,7 +318,7 @@ class PongFxRenderer:
         lo = bisect.bisect_left(self.flip_t, t - 0.3)
         hi = bisect.bisect_right(self.flip_t, t)
         flashes = []
-        for t0, rr, cc, team in sim.flips[lo:hi]:
+        for t0, rr, cc, team, old in sim.flips[lo:hi]:
             e = (t - t0) / 0.3
             x0, y0 = (FX0 + cc * CELL) * k, (FY0 + rr * CELL) * k
             d.rectangle([x0, y0, x0 + s, y0 + s], fill=BG)
@@ -449,6 +452,169 @@ class PongFxRenderer:
             d.text((cx - 3, y), f"{n}", font=self.font, fill=(255, 255, 255, 230), anchor="lm")
 
 
+# ------------------------------------------------------------------ Battle Royale: 4 Farben, eine gewinnt
+
+class PongRoyale(PongFx):
+    """Vier Farben starten in den Ecken. Gleiche Regeln (ein Block pro Berührung, Schwung über die Fläche).
+    Fällt eine Farbe unter `split_at`, spalten sich ihre Bälle einmal (bis `split_until`) -> Aufholjagden.
+    Wer unter `ko` Fläche fällt, verliert seine Bälle und ist raus. Die letzte Farbe gewinnt."""
+
+    def __init__(self, seed, team_c, names, n_max=48, n_ramp=30.0, power=(1.0, 0.35), ramp=(560.0, 1700.0, 24.0),
+                 ko=0.03, split_at=0.12, split_until=34.0, bonus=(0.25, 6.0), **kw):
+        super().__init__(seed, power=power, n_max=n_max, n_ramp=n_ramp, ramp=ramp, ko=ko, team_c=team_c,
+                         ball_c=[(255, 255, 255)] * 4, names=names, **kw)
+        self.ball_glow = [tuple(int(v * 0.55) for v in c) for c in team_c]
+        self.nt = 4
+        h, w = ROWS // 2, COLS // 2
+        self.state[:h, :w], self.state[:h, w:], self.state[h:, :w], self.state[h:, w:] = 0, 1, 2, 3
+        self.balls = []
+        cx, cy = (FX0 + FX1) / 2, (FY0 + FY1) / 2
+        for team in range(4):
+            x = FX0 + (w * 0.5 if team in (0, 2) else w * 1.5) * CELL
+            y = FY0 + (h * 0.5 if team in (0, 1) else h * 1.5) * CELL
+            a = math.atan2(cy - y, cx - x) + self.rng.uniform(-0.5, 0.5)
+            self.balls.append([x, y, math.cos(a), math.sin(a), team, True])
+        self.last_change = [-9.0] * 4
+        self.out = {}                 # Team -> Zeitpunkt des Ausscheidens
+        self.split_at, self.split_until, self.bonus = split_at, split_until, bonus
+        self.split_t = {}             # Team -> letzter Aufhol-Split
+
+    def shares(self):
+        return [float((self.state == k).mean()) for k in range(4)]
+
+    def manage(self):
+        sh = self.shares()
+        alive_teams = [k for k in range(4) if k not in self.out]
+        # Aufholjagd: kleine Farbe spaltet einmal alle Bälle
+        if self.t < self.split_until and self.t > 6:
+            for k in alive_teams:
+                if sh[k] < self.split_at and k not in self.split_t and len(alive_teams) > 2:
+                    self.split_t[k] = self.t
+                    self.events.append((self.t, "konter", {"team": k}))
+                    for i in self.alive(k):
+                        src = self.balls[i]
+                        a = math.atan2(src[3], src[2]) + math.pi * 0.5
+                        self.balls.append([src[0], src[1], math.cos(a), math.sin(a), k, True])
+                        self.births.append((self.t, len(self.balls) - 1))
+                    self.last_change[k] = self.t
+        N = 4 + (self.n_max - 4) * min(1.0, self.t / self.n_ramp)
+        p = self.power[0] + self.power[1] * self.t
+        eff = []
+        for k in range(4):
+            e = sh[k]
+            if k in self.split_t:
+                e += self.bonus[0] * math.exp(-(self.t - self.split_t[k]) / self.bonus[1])
+            eff.append(e if k in alive_teams else 0.0)
+        wts = [e ** p if e > 0 else 0.0 for e in eff]
+        W = sum(wts) or 1.0
+        tgt = [N * w_ / W for w_ in wts]
+        for k in range(4):
+            tgt[k] = max(tgt[k], 1.0) if (k in alive_teams and sh[k] >= self.ko) else 0.0
+        for k in alive_teams:
+            ids = self.alive(k)
+            if self.t - self.last_change[k] < 0.25 or not ids:
+                continue
+            if tgt[k] >= len(ids) + 0.6:
+                src = self.balls[self.rng.choice(ids)]
+                a = math.atan2(src[3], src[2]) + self.rng.choice((-1, 1)) * self.rng.uniform(0.6, 1.4)
+                self.balls.append([src[0], src[1], math.cos(a), math.sin(a), k, True])
+                self.births.append((self.t, len(self.balls) - 1))
+                self.events.append((self.t, "split", {"team": k}))
+                self.last_change[k] = self.t
+            elif tgt[k] <= len(ids) - 0.6:
+                def own(i):
+                    b = self.balls[i]
+                    cc, rr = int((b[0] - FX0) // CELL), int((b[1] - FY0) // CELL)
+                    return int((self.state[max(0, rr - 2):rr + 3, max(0, cc - 2):cc + 3] == k).sum())
+                i = min(ids, key=own)
+                self.balls[i][5] = False
+                self.deaths.append((self.t, i))
+                self.events.append((self.t, "pop", {"team": k}))
+                self.last_change[k] = self.t
+                if len(ids) == 1:
+                    self.out[k] = self.t
+                    self.events.append((self.t, "out", {"team": k}))
+                    rest = [j for j in range(4) if j not in self.out]
+                    if len(rest) == 1:
+                        self.winner, self.win_t = rest[0], self.t
+                        self.events.append((self.t, "win", {}))
+
+
+class RoyaleRenderer(PongFxRenderer):
+    def hud(self, im, state, balls):
+        """Gestapelter Balken unter dem Feld: Anteil jeder Farbe."""
+        d = ImageDraw.Draw(im, "RGBA")
+        x0, x1, y = FX0 + 10, FX1 - 10, FY1 + 26
+        w = x1 - x0
+        x = x0
+        for k in range(4):
+            sh = float((state == k).mean())
+            if sh > 0.004:
+                d.rectangle([x, y - 6, x + w * sh, y + 6], fill=self.tc[k])
+            x += w * sh
+
+    def story(self, im, state, t):
+        sim = self.sim
+        d = ImageDraw.Draw(im, "RGBA")
+        F = "/usr/share/fonts/opentype/inter/InterDisplay-Black.otf"
+        fn, fp = ImageFont.truetype(F, 21), ImageFont.truetype(F, 34)
+        # vier Anzeigen oben: Name + Prozent, ausgeschieden = abgedunkelt mit X
+        pw = (FX1 - FX0 - 3 * 12) / 4
+        for k in range(4):
+            x0 = FX0 + k * (pw + 12)
+            y0, y1 = FY0 - 78, FY0 - 8
+            out = k in sim.out and t >= sim.out[k]
+            c = self.tc[k]
+            d.rounded_rectangle([x0, y0, x0 + pw, y1], radius=14, fill=(0, 0, 0, 170),
+                                outline=c + (90 if out else 230,), width=3)
+            pc = round(float((state == k).mean()) * 100)
+            a = 90 if out else 255
+            d.text((x0 + pw / 2, y0 + 15), sim.names[k], font=fn, fill=c + (a,), anchor="mm")
+            d.text((x0 + pw / 2, y0 + 48), "OUT" if out else f"{pc}%", font=fp,
+                   fill=(255, 255, 255, a) if not out else (200, 200, 200, 120), anchor="mm")
+            if out:
+                e = min(1.0, (t - sim.out[k]) / 0.3)
+                d.line([x0 + 14, y0 + 10, x0 + 14 + (pw - 28) * e, y1 - 10], fill=c + (220,), width=4)
+
+        def banner(lines, alpha, cy):
+            if alpha <= 0.01:
+                return
+            fonts = [ImageFont.truetype(F, sz) for _, sz, _ in lines]
+            ws = [d.textlength(txt, font=fo) for (txt, _, _), fo in zip(lines, fonts)]
+            H = sum(sz for _, sz, _ in lines) * 1.25 + 40
+            W = max(ws) + 70
+            cx = (FX0 + FX1) / 2
+            d.rounded_rectangle([cx - W / 2, cy - H / 2, cx + W / 2, cy + H / 2], radius=28,
+                                fill=(6, 4, 14, int(235 * alpha)), outline=(255, 255, 255, int(60 * alpha)), width=2)
+            yy = cy - H / 2 + 20
+            for (txt, sz, col), fo in zip(lines, fonts):
+                if isinstance(col, list):
+                    x = cx - d.textlength(txt, font=fo) / 2
+                    for part, c in col:
+                        d.text((x, yy), part, font=fo, fill=c + (int(255 * alpha),), anchor="la")
+                        x += d.textlength(part, font=fo)
+                else:
+                    d.text((cx, yy), txt, font=fo, fill=col + (int(255 * alpha),), anchor="ma")
+                yy += sz * 1.25
+
+        a = min(1.0, t / 0.25) * min(1.0, max(0.0, (3.6 - t) / 0.5))
+        parts = []
+        for k in range(4):
+            parts.append((sim.names[k], self.tc[k]))
+            if k < 3:
+                parts.append(("  ", (255, 255, 255)))
+        banner([("Wähl deine Farbe!", 66, (255, 255, 255)), ("".join(p_ for p_, _ in parts), 36, parts),
+                ("Nur eine überlebt.", 34, (200, 200, 215))], a, (FY0 + FY1) / 2)
+        if sim.clear_t is not None and t > sim.clear_t + 0.4:
+            a = min(1.0, (t - sim.clear_t - 0.4) / 0.6)
+            w = sim.winner
+            c = tuple(int(v + (255 - v) * 0.15) for v in self.tc[w])
+            banner([(f"{sim.names[w]} GEWINNT!", 66, c)], a, (FY0 + FY1) / 2)
+
+
+PongRoyale.renderer = RoyaleRenderer
+
+
 # ------------------------------------------------------------------ Klang: nur weiches Ploppen
 
 def build_audio(sim, path):
@@ -456,7 +622,8 @@ def build_audio(sim, path):
     n = int(SR * total)
     out = np.zeros(n + SR * 2)
     rng = random.Random(3)
-    last = [-1.0, -1.0]
+    last = [-1.0] * 8
+    pitches = [(600, 640, 680, 720), (430, 460, 490, 520), (520, 555, 590, 625), (370, 395, 420, 445)]
 
     def put(t, s, vol):
         i = int(t * SR)
@@ -470,12 +637,15 @@ def build_audio(sim, path):
             if t - last[tm] < 0.045:
                 continue
             last[tm] = t
-            f = rng.choice((600, 640, 680, 720)) if tm == 0 else rng.choice((430, 460, 490, 520))
+            f = rng.choice(pitches[tm % 4])
             put(t, plop(f), 0.5)
         elif kind == "split":
             put(t, plop(330, big=True), 0.7)
         elif kind == "pop":
             put(t, plop(220, big=True), 0.9)
+        elif kind == "out":   # Farbe scheidet aus: tiefes Doppel-Plopp
+            put(t, plop(160, big=True), 1.0)
+            put(t + 0.12, plop(120, big=True), 0.9)
         elif kind == "clear":
             for j, f in enumerate((300, 360, 450)):
                 put(t + j * 0.12, plop(f, big=True), 0.6)
@@ -512,7 +682,7 @@ def _chunk(args):
 
 def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4):
     global _R
-    _R = PongFxRenderer(sim)
+    _R = getattr(sim, "renderer", PongFxRenderer)(sim)
     n = len(sim.frames)
     if preview_dir:
         os.makedirs(preview_dir, exist_ok=True)
@@ -545,6 +715,8 @@ PINK_GRUEN = dict(team_c=[(255, 55, 160), (50, 225, 105)], ball_c=[(175, 255, 19
                   names=["PINK", "GRÜN"])
 ROT_GELB = dict(team_c=[(240, 40, 60), (255, 205, 30)], ball_c=[(255, 240, 160), (190, 20, 50)],
                 names=["ROT", "GELB"])
+ROYALE = dict(team_c=[(255, 105, 90), (60, 235, 180), (110, 95, 255), (255, 195, 50)],
+              names=["KORALLE", "MINT", "INDIGO", "GOLD"])
 PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run(),
         "p02_orange_vs_blau": lambda: PongFx(12, power=(1.0, 0.36), split="lr", konter=(0.25, 0.95, 9.0),
                                              ramp=(560.0, 1450.0, 24.0), **ORANGE_BLAU).run(),
@@ -554,7 +726,10 @@ PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run(),
         "p04_pink_vs_gruen": lambda: PongFx(20, power=(1.0, 0.6), split="lr", konter=(0.37, 0.95, 5.5, 30.0),
                                             ramp=(560.0, 1700.0, 24.0), **PINK_GRUEN).run(),
         "p05_rot_vs_gelb": lambda: PongFx(4, power=(1.0, 0.6), split="lr", konter=(0.37, 0.95, 5.5, 30.0),
-                                          ramp=(560.0, 1700.0, 24.0), **ROT_GELB).run()}
+                                          ramp=(560.0, 1700.0, 24.0), **ROT_GELB).run(),
+        "p06_battle_royale": lambda: PongRoyale(SEED_ROYALE, power=(1.0, 0.22), n_ramp=40.0, split_until=42.0,
+                                                split_at=0.15, bonus=(0.45, 9.0), **ROYALE).run()}
+SEED_ROYALE = 13
 
 if __name__ == "__main__":
     import sys

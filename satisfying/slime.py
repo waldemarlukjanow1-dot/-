@@ -64,7 +64,7 @@ class Region:
 class SlimeSim:
     def __init__(self, seed, poly=GERMANY, cities=CITIES_DE, start="Berlin", n_agents=120000, spawn_time=8.0,
                  steps_per_frame=2, total=56.0, sa=0.4, ra=0.785, so=9.0, speed=1.0, deposit=4.0, decay=0.93,
-                 food=3.0, connect_at=4.0, cap=3, trail_max=60.0):
+                 food=3.0, connect_at=4.0, cap=3, trail_max=60.0, smell=(20.0, 110.0)):
         self.rng = np.random.default_rng(seed)
         self.reg = Region(poly)
         self.W, self.H = W1 // SC, H1 // SC
@@ -97,6 +97,11 @@ class SlimeSim:
         self.food_map = np.zeros((self.H, self.W), np.float32)
         for cm in self.city_masks:
             self.food_map[cm] = 1.0
+        # Fern-Duft nicht verbundener Städte (lockt den Schleim gezielt an)
+        self.smell = smell
+        self.city_d = [np.hypot(xx - x / SC, yy - y / SC).astype(np.float32) for _, x, y in self.cities]
+        self.scent = np.zeros((self.H, self.W), np.float32)
+        self._scent_dirty = True
 
     def spawn(self, n):
         _, x, y = self.cities[self.start]
@@ -106,10 +111,18 @@ class SlimeSim:
         self.ay = np.concatenate([self.ay, (y / SC + np.sin(a) * r).astype(np.float32)])
         self.ah = np.concatenate([self.ah, (self.rng.random(n) * 2 * np.pi).astype(np.float32)])
 
+    def update_scent(self):
+        A, L = self.smell
+        self.scent[:] = 0
+        for i, d in enumerate(self.city_d):
+            if i not in self.connected:
+                self.scent += A * np.exp(-d / L)
+        self._scent_dirty = False
+
     def sense(self, ang):
         x = np.clip((self.ax + np.cos(ang) * self.so).astype(np.int32), 0, self.W - 1)
         y = np.clip((self.ay + np.sin(ang) * self.so).astype(np.int32), 0, self.H - 1)
-        return self.trail[y, x]
+        return self.trail[y, x] + self.scent[y, x]
 
     def step(self):
         h = self.ah
@@ -162,6 +175,8 @@ class SlimeSim:
             want = int(self.n_agents * min(1.0, (t + 0.3) / self.spawn_time))
             if want > len(self.ax):
                 self.spawn(want - len(self.ax))
+            if self._scent_dirty:
+                self.update_scent()
             for _ in range(self.spf):
                 self.step()
             # Agentendichte = sichtbarer Schleim
@@ -172,6 +187,7 @@ class SlimeSim:
             for i, cm in enumerate(self.city_masks):
                 if i not in self.connected and (i == self.start or dens[cm].sum() >= self.connect_at):
                     self.connected[i] = t
+                    self._scent_dirty = True
                     self.events.append((t, "city", {"i": i, "n": len(self.connected)}))
             if self.all_t is None and len(self.connected) == len(self.cities):
                 self.all_t = t

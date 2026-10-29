@@ -36,9 +36,18 @@ TEAM_C = [(170, 75, 255), (40, 215, 235)]           # Lila, Türkis
 BALL_C = [(120, 245, 255), (240, 150, 255)]      # Ball in der Gegenfarbe, gut sichtbar
 
 
+EN = {"Welche Farbe gewinnt?": "Which color wins?", "{} GEWINNT!": "{} WINS!", "Wähl deine Farbe!": "Pick your color!",
+      "Nur eine überlebt.": "Only one survives.", "{} Farben. Nur eine überlebt.": "{} colors. Only one survives."}
+
+
+def tr(sim, text):
+    """Video-Texte in der Sprache des Videos."""
+    return EN.get(text, text) if getattr(sim, "lang", "de") == "en" else text
+
+
 class PongFx:
     def __init__(self, seed, power=(1.0, 0.3), n_max=40, n_ramp=34.0, ramp=(560.0, 1250.0, 26.0), r=9.0, max_t=75.0, ko=0.04,
-                 split="tb", team_c=None, ball_c=None, names=None, konter=None, lag=0.0):
+                 split="tb", team_c=None, ball_c=None, names=None, konter=None, lag=0.0, lang="de"):
         self.rng = random.Random(seed)
         self.state = np.zeros((ROWS, COLS), np.uint8)
         self.split = split
@@ -47,6 +56,7 @@ class PongFx:
         else:                      # oben gegen unten
             self.state[ROWS // 2:] = 1
         self.team_c, self.ball_c, self.names = team_c or TEAM_C, ball_c or BALL_C, names
+        self.lang = lang
         # Konter: (Schwelle, Bonus, Abklingzeit) – einmal pro Runde, wenn ein Team unter die Schwelle fällt
         self.konter, self.konter_t, self.konter_team = konter, None, None
         self.lag, self.share_hist = lag, []   # Verstärkung reagiert verzögert auf die Lage
@@ -427,14 +437,14 @@ class PongFxRenderer:
         # Hook in den ersten Sekunden
         a = min(1.0, t / 0.25) * min(1.0, max(0.0, (3.4 - t) / 0.5))
         n0, n1 = sim.names
-        banner([("Welche Farbe gewinnt?", 64, (255, 255, 255)),
+        banner([(tr(sim, "Welche Farbe gewinnt?"), 64, (255, 255, 255)),
                 (f"{n0} vs {n1}", 50, [(n0, self.tc[0]), (" vs ", (255, 255, 255)), (n1, self.tc[1])])],
                a, (FY0 + FY1) / 2 - 40)
         # Sieger
         if sim.clear_t is not None and t > sim.clear_t + 0.4:
             a = min(1.0, (t - sim.clear_t - 0.4) / 0.6)
             w = sim.winner
-            banner([(f"{sim.names[w]} GEWINNT!", 66, self.tc[w])], a, (FY0 + FY1) / 2 - 40)
+            banner([(tr(sim, "{} GEWINNT!").format(sim.names[w]), 66, self.tc[w])], a, (FY0 + FY1) / 2 - 40)
 
     def hud(self, im, state, balls):
         """Schmaler Kräfte-Balken unter dem Feld + kleine Ball-Zähler (Randinfo)."""
@@ -634,19 +644,19 @@ class RoyaleRenderer(PongFxRenderer):
                 parts.append((sim.names[k], self.tc[k]))
                 if k < nt - 1:
                     parts.append(("  ", (255, 255, 255)))
-            banner([("Wähl deine Farbe!", 66, (255, 255, 255)), ("".join(p_ for p_, _ in parts), 36, parts),
-                    ("Nur eine überlebt.", 34, (200, 200, 215))], a, (FY0 + FY1) / 2)
+            banner([(tr(sim, "Wähl deine Farbe!"), 66, (255, 255, 255)), ("".join(p_ for p_, _ in parts), 36, parts),
+                    (tr(sim, "Nur eine überlebt."), 34, (200, 200, 215))], a, (FY0 + FY1) / 2)
         else:
             dots = []
             for k in range(nt):
                 dots.append(("●", self.tc[k]))
-            banner([("Wähl deine Farbe!", 66, (255, 255, 255)), ("".join(p_ for p_, _ in dots), 44, dots),
-                    (f"{nt} Farben. Nur eine überlebt.", 34, (200, 200, 215))], a, (FY0 + FY1) / 2)
+            banner([(tr(sim, "Wähl deine Farbe!"), 66, (255, 255, 255)), ("".join(p_ for p_, _ in dots), 44, dots),
+                    (tr(sim, "{} Farben. Nur eine überlebt.").format(nt), 34, (200, 200, 215))], a, (FY0 + FY1) / 2)
         if sim.clear_t is not None and t > sim.clear_t + 0.4:
             a = min(1.0, (t - sim.clear_t - 0.4) / 0.6)
             w = sim.winner
             c = tuple(int(v + (255 - v) * 0.15) for v in self.tc[w])
-            banner([(f"{sim.names[w]} GEWINNT!", 66, c)], a, (FY0 + FY1) / 2)
+            banner([(tr(sim, "{} GEWINNT!").format(sim.names[w]), 66, c)], a, (FY0 + FY1) / 2)
 
 
 PongRoyale.renderer = RoyaleRenderer
@@ -762,6 +772,8 @@ NEON6 = dict(team_c=[(0, 215, 255), (255, 40, 200), (255, 225, 40), (140, 80, 25
 PASTELL = dict(team_c=[(130, 195, 255), (255, 160, 195), (250, 230, 150), (195, 160, 255), (150, 210, 165),
                        (255, 185, 130)],
                names=["HIMMEL", "ROSÉ", "VANILLE", "FLIEDER", "SALBEI", "APRICOT"])
+NEON_EN = dict(team_c=[(180, 40, 255), (170, 255, 0), (255, 100, 0), (30, 120, 255), (0, 255, 200), (255, 30, 150)],
+               names=["PURPLE", "LIME", "ORANGE", "BLUE", "AQUA", "PINK"], lang="en")
 PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run(),
         "p02_orange_vs_blau": lambda: PongFx(12, power=(1.0, 0.36), split="lr", konter=(0.25, 0.95, 9.0),
                                              ramp=(560.0, 1450.0, 24.0), **ORANGE_BLAU).run(),
@@ -783,6 +795,8 @@ PONG["p08_neon6_royale"] = lambda: PongRoyale(SEED_N6, grid=(3, 2), **N6_KW, **N
 SEED_N6 = 41
 PONG["p09_pastell_royale"] = lambda: PongRoyale(SEED_PASTELL, grid=(3, 2), **N6_KW, **PASTELL).run()
 SEED_PASTELL = 145
+PONG["p10_neon_royale_en"] = lambda: PongRoyale(SEED_NEON_EN, grid=(3, 2), **N6_KW, **NEON_EN).run()
+SEED_NEON_EN = 189
 
 if __name__ == "__main__":
     import sys

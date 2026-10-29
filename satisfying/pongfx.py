@@ -757,6 +757,8 @@ ROYALE = dict(team_c=[(255, 105, 90), (60, 235, 180), (110, 95, 255), (255, 195,
 REGENBOGEN = dict(team_c=[(255, 60, 70), (60, 120, 255), (255, 220, 40), (255, 80, 190), (50, 230, 170),
                           (255, 140, 30), (160, 80, 255), (150, 235, 40)],
                   names=["ROT", "BLAU", "GELB", "PINK", "MINT", "ORANGE", "LILA", "LIME"])
+NEON6 = dict(team_c=[(0, 215, 255), (255, 40, 200), (255, 225, 40), (140, 80, 255), (60, 230, 90), (255, 120, 20)],
+             names=["CYAN", "MAGENTA", "GELB", "LILA", "GRÜN", "ORANGE"])
 PONG = {"p01_pong_block_battle": lambda: PongFx(SEED_PONG).run(),
         "p02_orange_vs_blau": lambda: PongFx(12, power=(1.0, 0.36), split="lr", konter=(0.25, 0.95, 9.0),
                                              ramp=(560.0, 1450.0, 24.0), **ORANGE_BLAU).run(),
@@ -773,6 +775,9 @@ SEED_ROYALE = 13
 PONG["p07_regenbogen_royale"] = lambda: PongRoyale(SEED_RB, grid=(4, 2), **RB_KW, **REGENBOGEN).run()
 RB_KW = dict(n_max=64, n_ramp=40.0, power=(1.0, 0.22), split_at=0.06, split_until=40.0, bonus=(0.25, 9.0), ko=0.015)
 SEED_RB = 0
+N6_KW = dict(n_max=56, n_ramp=40.0, power=(1.0, 0.2), split_at=0.08, split_until=40.0, bonus=(0.3, 9.0), ko=0.02)
+PONG["p08_neon6_royale"] = lambda: PongRoyale(SEED_N6, grid=(3, 2), **N6_KW, **NEON6).run()
+SEED_N6 = 41
 
 if __name__ == "__main__":
     import sys

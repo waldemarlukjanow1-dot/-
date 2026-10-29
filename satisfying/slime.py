@@ -25,8 +25,8 @@ SR = 44100
 SC = 2                      # Simulationsgitter: 1 Zelle = 2 Pixel
 
 # Deutschland (vereinfachte Grenze, lon/lat) und Städte
-GERMANY = [(8.6, 54.9), (9.4, 54.83), (9.9, 54.8), (10.15, 54.45), (11.0, 54.4), (11.2, 54.5), (10.9, 53.95),
-           (11.5, 54.0), (12.1, 54.18), (12.5, 54.47), (13.1, 54.3), (13.4, 54.6), (13.7, 54.5), (14.2, 53.95),
+GERMANY = [(8.6, 54.9), (9.4, 54.83), (9.9, 54.8), (10.15, 54.45), (11.0, 54.35),
+           (11.5, 54.05), (12.1, 54.18), (12.5, 54.47), (13.1, 54.3), (13.4, 54.6), (13.7, 54.5), (14.2, 53.95),
            (14.4, 53.3), (14.1, 52.9), (14.6, 52.6), (14.7, 52.1), (14.6, 51.6), (15.0, 51.1), (14.8, 50.87),
            (14.0, 50.8), (13.5, 50.6), (12.9, 50.4), (12.2, 50.3), (12.1, 50.2), (12.5, 49.9), (12.4, 49.7),
            (12.9, 49.35), (13.4, 49.1), (13.8, 48.8), (13.45, 48.57), (13.0, 48.3), (12.8, 48.2), (12.9, 47.95),
@@ -62,140 +62,139 @@ class Region:
 
 
 class SlimeSim:
-    def __init__(self, seed, poly=GERMANY, cities=CITIES_DE, start="Berlin", n_agents=120000, spawn_time=8.0,
-                 steps_per_frame=2, total=56.0, sa=0.4, ra=0.785, so=9.0, speed=1.0, deposit=4.0, decay=0.93,
-                 food=3.0, connect_at=4.0, cap=3, trail_max=60.0, smell=(20.0, 110.0)):
-        self.rng = np.random.default_rng(seed)
+    """Wachstum eines Schleimpilz-Netzes von einer Start-Stadt aus.
+
+    Das Netz folgt dem, was Physarum im Experiment tut: zuerst ein minimales Verbindungsnetz (kürzeste Gesamtlänge),
+    später einige Querverbindungen, die Ausfallsicherheit geben. Die Adern wachsen mit konstanter Geschwindigkeit,
+    an der Spitze tasten feine Fühler; seitlich wachsen Suchfühler ins Leere und ziehen sich wieder zurück."""
+
+    def __init__(self, seed, poly=GERMANY, cities=CITIES_DE, start="Berlin", reach_t=40.0, loops=5, total=None):
+        self.rng = random.Random(seed)
         self.reg = Region(poly)
-        self.W, self.H = W1 // SC, H1 // SC
-        # Land-Maske
-        m = Image.new("L", (self.W, self.H), 0)
-        ImageDraw.Draw(m).polygon([tuple(v / SC for v in self.reg.px(*p)) for p in poly], fill=255)
-        self.mask = np.asarray(m) > 0
         self.poly_px = [self.reg.px(*p) for p in poly]
+        m = Image.new("L", (W1, H1), 0)
+        ImageDraw.Draw(m).polygon(self.poly_px, fill=255)
+        self.mask = np.asarray(m) > 0
         self.cities = [(n, *self.reg.px(lon, lat)) for n, lat, lon in cities]
+        P = np.array([(x, y) for _, x, y in self.cities])
+        n = len(P)
+        D = np.hypot(P[:, None, 0] - P[None, :, 0], P[:, None, 1] - P[None, :, 1])
         self.start = next(i for i, c in enumerate(self.cities) if c[0] == start)
-        self.trail = np.zeros((self.H, self.W), np.float32)
-        self.n_agents, self.spawn_time, self.spf, self.total = n_agents, spawn_time, steps_per_frame, total
-        self.sa, self.ra, self.so, self.speed, self.dep, self.decay = sa, ra, so, speed, deposit, decay
-        self.food, self.connect_at, self.cap, self.trail_max = food, connect_at, cap, trail_max
-        self.occ = np.zeros((self.H, self.W), np.int32)
-        self.ax = np.zeros(0, np.float32)
-        self.ay = np.zeros(0, np.float32)
-        self.ah = np.zeros(0, np.float32)
-        self.connected = {}          # Stadt-Index -> Zeit
-        self.all_t = None
-        self.gain = 2.0
-        self.frames = []             # komprimierte Spur-Karten (uint8)
-        self.events = []
-        # Duft-Quellen (Städte) als kleine Scheiben
-        yy, xx = np.mgrid[0:self.H, 0:self.W]
-        self.city_masks = []
-        for n, x, y in self.cities:
-            d = np.hypot(xx - x / SC, yy - y / SC)
-            self.city_masks.append(d <= 3.0)
-        self.food_map = np.zeros((self.H, self.W), np.float32)
-        for cm in self.city_masks:
-            self.food_map[cm] = 1.0
-        # Fern-Duft nicht verbundener Städte (lockt den Schleim gezielt an)
-        self.smell = smell
-        self.city_d = [np.hypot(xx - x / SC, yy - y / SC).astype(np.float32) for _, x, y in self.cities]
-        self.scent = np.zeros((self.H, self.W), np.float32)
-        self._scent_dirty = True
+        # minimaler Spannbaum (Prim) ab Start-Stadt
+        inside, edges = {self.start}, []
+        while len(inside) < n:
+            a, b = min(((a, b) for a in inside for b in range(n) if b not in inside), key=lambda e: D[e])
+            edges.append((a, b))
+            inside.add(b)
+        # Ankunftszeiten (Geschwindigkeit so, dass die letzte Stadt bei reach_t erreicht wird)
+        arr = {self.start: 0.0}
+        for a, b in edges:
+            arr[b] = arr[a] + D[a, b]
+        lead = 1.2          # kurzer Auftakt, dann wächst der Schleim los
+        v = max(arr.values()) / (reach_t - lead - 0.35 * self._depth(edges))
+        self.speed = v
+        self.edges = []      # (a, b, t_start, t_end, punkte)
+        t_city = {self.start: 0.0}
+        for a, b in edges:
+            t0 = t_city[a] + 0.35
+            t1 = t0 + D[a, b] / v
+            t_city[b] = t1
+            self.edges.append((a, b, t0, t1, self.path(P[a], P[b])))
+        # Zeitverlauf: anfangs schneller (früh die erste Stadt), dann gleichmäßig
+        T = max(t_city.values())
+        warp = lambda x: lead + (reach_t - lead) * (x / T) ** 1.35 if x > 0 else lead
+        self.edges = [(a, b, warp(t0), warp(t1), pts) for a, b, t0, t1, pts in self.edges]
+        self.connected = {i: warp(t) for i, t in t_city.items()}
+        self.connected[self.start] = 0.0
+        # Querverbindungen (Schleifen): kurze, nicht kreuzende Zusatz-Kanten, wachsen später
+        tree = {frozenset(e) for e in edges}
+        cand = sorted(((D[a, b], a, b) for a in range(n) for b in range(a + 1, n) if frozenset((a, b)) not in tree))
+        added = 0
+        segs = [(P[a], P[b]) for a, b in edges]
+        for d, a, b in cand:
+            if added >= loops or d > 330:
+                break
+            if any(_cross(P[a], P[b], s0, s1) for s0, s1 in segs):
+                continue
+            t0 = max(self.connected[a], self.connected[b]) + 1.5 + added * 1.2
+            self.edges.append((a, b, t0, t0 + d / v, self.path(P[a], P[b])))
+            segs.append((P[a], P[b]))
+            added += 1
+        self.all_t = max(self.connected.values())
+        self.done_t = max(e[3] for e in self.edges)
+        self.total = total or max(self.all_t, self.done_t) + 6.0
+        self.n_frames = int(self.total * FPS)
+        self.total_t_for_clock = self.all_t
+        self.events = sorted([(t, "city", {"i": i}) for i, t in self.connected.items() if i != self.start])
+        for k, ev in enumerate(self.events):
+            ev[2]["n"] = k + 2
+        self.events.append((self.all_t, "all", {}))
+        self.tendrils = self.make_tendrils()
 
-    def spawn(self, n):
-        _, x, y = self.cities[self.start]
-        r = np.sqrt(self.rng.random(n)) * 6
-        a = self.rng.random(n) * 2 * np.pi
-        self.ax = np.concatenate([self.ax, (x / SC + np.cos(a) * r).astype(np.float32)])
-        self.ay = np.concatenate([self.ay, (y / SC + np.sin(a) * r).astype(np.float32)])
-        self.ah = np.concatenate([self.ah, (self.rng.random(n) * 2 * np.pi).astype(np.float32)])
+    @staticmethod
+    def _depth(edges):
+        depth = {}
+        for a, b in edges:
+            depth[b] = depth.get(a, 0) + 1
+        return max(depth.values())
 
-    def update_scent(self):
-        A, L = self.smell
-        self.scent[:] = 0
-        for i, d in enumerate(self.city_d):
-            if i not in self.connected:
-                self.scent += A * np.exp(-d / L)
-        self._scent_dirty = False
+    def path(self, p0, p1, n=48):
+        """Geschwungene Ader zwischen zwei Städten."""
+        rng = self.rng
+        p0, p1 = np.array(p0, float), np.array(p1, float)
+        d = p1 - p0
+        L = np.hypot(*d)
+        nrm = np.array([-d[1], d[0]]) / max(L, 1e-6)
+        u = np.linspace(0, 1, n)
+        ph = [rng.uniform(0, 6.28) for _ in range(3)]
+        off = (np.sin(np.pi * u) * (0.07 * np.sin(2 * np.pi * u + ph[0]) + 0.04 * np.sin(5 * np.pi * u + ph[1]))
+               + 0.012 * np.sin(13 * np.pi * u + ph[2]) * np.sin(np.pi * u)) * L
+        pts = p0[None] + d[None] * u[:, None] + nrm[None] * off[:, None]
+        return pts
 
-    def sense(self, ang):
-        x = np.clip((self.ax + np.cos(ang) * self.so).astype(np.int32), 0, self.W - 1)
-        y = np.clip((self.ay + np.sin(ang) * self.so).astype(np.int32), 0, self.H - 1)
-        return self.trail[y, x] + self.scent[y, x]
+    def make_tendrils(self):
+        """Suchfühler: wachsen seitlich aus fertigen Adern, verzweigen sich, ziehen sich zurück."""
+        rng = self.rng
+        out = []
+        t = 1.0
+        while t < self.total - 3:
+            t += rng.uniform(0.12, 0.3)
+            ready = [e for e in self.edges if e[2] < t]
+            if not ready:
+                continue
+            a, b, t0, t1, pts = rng.choice(ready)
+            frac = min(1.0, (t - t0) / max(1e-6, t1 - t0))
+            k = int(rng.uniform(0.05, max(0.06, frac * 0.95)) * (len(pts) - 1))
+            x, y = pts[k]
+            dx, dy = pts[min(k + 1, len(pts) - 1)] - pts[max(k - 1, 0)]
+            base = math.atan2(dy, dx) + rng.choice((-1, 1)) * rng.uniform(0.9, 2.2)
+            branches = []
+            def grow(x, y, ang, L, depth):
+                seg = [(x, y)]
+                for _ in range(7):
+                    ang += rng.uniform(-0.45, 0.45)
+                    x += math.cos(ang) * L / 7
+                    y += math.sin(ang) * L / 7
+                    if not (0 <= int(x) < W1 and 0 <= int(y) < H1 and self.mask[int(y), int(x)]):
+                        break
+                    seg.append((x, y))
+                if len(seg) > 2:
+                    branches.append(seg)
+                    if depth < 2:
+                        j = rng.randint(1, len(seg) - 1)
+                        grow(*seg[j], ang + rng.choice((-1, 1)) * rng.uniform(0.5, 1.0), L * 0.55, depth + 1)
+            grow(x, y, base, rng.uniform(40, 110), 0)
+            if branches:
+                out.append((t, rng.uniform(1.0, 1.6), rng.uniform(0.8, 1.8), rng.uniform(1.2, 2.0), branches))
+        return out
 
-    def step(self):
-        h = self.ah
-        f = self.sense(h)
-        l = self.sense(h - self.sa)
-        r = self.sense(h + self.sa)
-        rnd = self.rng.random(len(h)).astype(np.float32)
-        turn = np.zeros_like(h)
-        both = (l > f) & (r > f)
-        turn[both] = np.where(rnd[both] < 0.5, -self.ra, self.ra)
-        only_l = (l > f) & (l > r) & ~both
-        only_r = (r > f) & (r > l) & ~both
-        turn[only_l] = -self.ra
-        turn[only_r] = self.ra
-        h = h + turn + (rnd - 0.5) * 0.1
-        nx = self.ax + np.cos(h) * self.speed
-        ny = self.ay + np.sin(h) * self.speed
-        xi = np.clip(nx.astype(np.int32), 0, self.W - 1)
-        yi = np.clip(ny.astype(np.int32), 0, self.H - 1)
-        ok = self.mask[yi, xi]
-        # Platzregel: in eine volle Zelle darf niemand nachrücken (hält den Schleim locker und lässt ihn wachsen)
-        cx = np.clip(self.ax.astype(np.int32), 0, self.W - 1)
-        cy = np.clip(self.ay.astype(np.int32), 0, self.H - 1)
-        same = (cx == xi) & (cy == yi)
-        ok &= same | (self.occ[yi, xi] < self.cap)
-        # an der Grenze: stehen bleiben, neue zufällige Richtung
-        h = np.where(ok, h, self.rng.random(len(h)).astype(np.float32) * 2 * np.pi)
-        self.ax = np.where(ok, nx, self.ax)
-        self.ay = np.where(ok, ny, self.ay)
-        self.ah = h
-        xi = np.clip(self.ax.astype(np.int32), 0, self.W - 1)
-        yi = np.clip(self.ay.astype(np.int32), 0, self.H - 1)
-        np.add.at(self.trail, (yi, xi), self.dep)
-        self.occ[:] = 0
-        np.add.at(self.occ, (yi, xi), 1)
-        # Städte duften
-        self.trail += self.food_map * self.food
-        # verteilen + verblassen
-        t = self.trail
-        b = (t + np.roll(t, 1, 0) + np.roll(t, -1, 0) + np.roll(t, 1, 1) + np.roll(t, -1, 1) +
-             np.roll(np.roll(t, 1, 0), 1, 1) + np.roll(np.roll(t, 1, 0), -1, 1) +
-             np.roll(np.roll(t, -1, 0), 1, 1) + np.roll(np.roll(t, -1, 0), -1, 1)) / 9.0
-        self.trail = np.minimum(b * self.decay, self.trail_max) * self.mask
 
-    def run(self):
-        n_frames = int(self.total * FPS)
-        dens = np.zeros((self.H, self.W), np.float32)
-        for fi in range(n_frames):
-            t = fi / FPS
-            want = int(self.n_agents * min(1.0, (t + 0.3) / self.spawn_time))
-            if want > len(self.ax):
-                self.spawn(want - len(self.ax))
-            if self._scent_dirty:
-                self.update_scent()
-            for _ in range(self.spf):
-                self.step()
-            # Agentendichte = sichtbarer Schleim
-            dens[:] = 0
-            xi = np.clip(self.ax.astype(np.int32), 0, self.W - 1)
-            yi = np.clip(self.ay.astype(np.int32), 0, self.H - 1)
-            np.add.at(dens, (yi, xi), 1.0)
-            for i, cm in enumerate(self.city_masks):
-                if i not in self.connected and (i == self.start or dens[cm].sum() >= self.connect_at):
-                    self.connected[i] = t
-                    self._scent_dirty = True
-                    self.events.append((t, "city", {"i": i, "n": len(self.connected)}))
-            if self.all_t is None and len(self.connected) == len(self.cities):
-                self.all_t = t
-                self.events.append((t, "all", {}))
-            v = np.log1p(dens * self.gain) / math.log1p(40.0)
-            self.frames.append((np.clip(v, 0, 1) * 255).astype(np.uint8))
-        self.total_t_for_clock = self.all_t or self.total
-        return self
+def _cross(a, b, c, d):
+    def ccw(p, q, r):
+        return (r[1] - p[1]) * (q[0] - p[0]) - (q[1] - p[1]) * (r[0] - p[0])
+    if any(np.allclose(x, y) for x in (a, b) for y in (c, d)):
+        return False
+    return (ccw(a, c, d) * ccw(b, c, d) < 0) and (ccw(a, b, c) * ccw(a, b, d) < 0)
 
 
 # ------------------------------------------------------------------ Darstellung
@@ -250,8 +249,8 @@ class SlimeRenderer:
     def frame(self, fi):
         sim = self.sim
         t = (fi + 1) / FPS
-        v = Image.fromarray(sim.frames[fi]).resize((W1, H1), Image.BILINEAR)
-        col = self.lut[np.asarray(v)]
+        v = self.intensity(t)
+        col = self.lut[v]
         arr = self.base + col
         # Glow
         g = Image.fromarray(np.clip(col, 0, 255).astype(np.uint8)).resize((W1 // 6, H1 // 6), Image.BILINEAR)
@@ -288,11 +287,65 @@ class SlimeRenderer:
         # Hook am Anfang, Auflösung am Ende
         a = min(1.0, t / 0.25) * min(1.0, max(0.0, (3.8 - t) / 0.5))
         self.banner(d, [(self.title[0], 60, (255, 255, 255)), (self.title[1], 38, (255, 225, 110))], a, 860)
-        if sim.all_t is not None and t > sim.all_t + 0.8:
-            a = min(1.0, (t - sim.all_t - 0.8) / 0.6)
+        if sim.all_t is not None and sim.all_t + 0.8 < t < sim.all_t + 5.5:
+            e = t - sim.all_t - 0.8
+            a = min(1.0, e / 0.6) * min(1.0, (4.7 - e) / 0.8)
             self.banner(d, [(f"All {N} cities connected.", 52, (255, 235, 140))] +
                         [(x, 38, (235, 235, 245)) for x in self.ending], a, 860)
         return im
+
+    def intensity(self, t):
+        """Helligkeit des Schleims (0..255) zum Zeitpunkt t, 2x gezeichnet und verkleinert."""
+        sim, k = self.sim, 2
+        im = Image.new("L", (W1 * k, H1 * k), 0)
+        d = ImageDraw.Draw(im)
+        rng = random.Random(int(t * 1000))
+        # Suchfühler (unter den Adern)
+        for t0, g, hold, fade, branches in sim.tendrils:
+            e = t - t0
+            if e < 0 or e > g + hold + fade:
+                continue
+            frac = min(1.0, e / g) if e < g + hold else max(0.0, 1 - (e - g - hold) / fade)
+            val = int(150 * (0.5 + 0.5 * frac))
+            for br in branches:
+                m = max(2, int(round(frac * len(br))))
+                if m >= 2:
+                    d.line([(x * k, y * k) for x, y in br[:m]], fill=val, width=int(1.6 * k), joint="curve")
+        # Adern
+        for a_, b_, t0, t1, pts in sim.edges:
+            if t < t0:
+                continue
+            frac = min(1.0, (t - t0) / (t1 - t0))
+            n = len(pts)
+            fk = frac * (n - 1)
+            j = int(fk)
+            seg = [tuple(p) for p in pts[:j + 1]]
+            if j < n - 1:
+                tip = pts[j] + (pts[j + 1] - pts[j]) * (fk - j)
+                seg.append(tuple(tip))
+            w = 2.4 + (3.2 * min(1.0, (t - t1) / 6.0) if t > t1 else 0.0)
+            if len(seg) >= 2:
+                d.line([(x * k, y * k) for x, y in seg], fill=235, width=max(2, int(w * k)), joint="curve")
+            if frac < 1.0:   # tastende Fühler an der Spitze
+                tx, ty = seg[-1]
+                ang = math.atan2(pts[min(j + 1, n - 1)][1] - pts[j][1], pts[min(j + 1, n - 1)][0] - pts[j][0])
+                for q in range(5):
+                    a2 = ang + (q - 2) * 0.32 + rng.uniform(-0.12, 0.12)
+                    L = rng.uniform(14, 30)
+                    d.line([(tx * k, ty * k), ((tx + math.cos(a2) * L) * k, (ty + math.sin(a2) * L) * k)],
+                           fill=130, width=k)
+            else:            # Strömung: helle Pulse wandern durch fertige Adern
+                L = float(np.sum(np.hypot(*np.diff(pts, axis=0).T)))
+                for q in range(max(1, int(L / 90))):
+                    u = ((t - t1) * 70 / L + q / max(1, int(L / 90))) % 1.0
+                    x, y = pts[int(u * (n - 1))]
+                    r = (w * 0.9 + 1.2) * k
+                    d.ellipse([x * k - r, y * k - r, x * k + r, y * k + r], fill=255)
+        # Körper in der Start-Stadt
+        _, sx, sy = sim.cities[sim.start]
+        R = (6 + 14 * min(1.0, t / 2.5) + 1.5 * math.sin(t * 2.3)) * k
+        d.ellipse([sx * k - R, sy * k - R, sx * k + R, sy * k + R], fill=245)
+        return np.asarray(im.reduce(k))
 
     @staticmethod
     def banner(d, lines, alpha, cy):
@@ -369,7 +422,7 @@ def _chunk(args):
 def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4, **rkw):
     global _R
     _R = SlimeRenderer(sim, **rkw)
-    n = len(sim.frames)
+    n = sim.n_frames
     if preview_dir:
         os.makedirs(preview_dir, exist_ok=True)
         for pt in preview_times:
@@ -392,3 +445,22 @@ def render(sim, name, out_path, preview_dir=None, preview_times=(), jobs=4, **rk
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", wav, "-c:v", "copy",
                         "-c:a", "aac", "-b:a", "192k", "-shortest", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
                         "-movflags", "+faststart", out_path], check=True)
+
+
+SLIME = {"s01_slime_germany": lambda: SlimeSim(SEED_SLIME)}
+SEED_SLIME = 1
+
+if __name__ == "__main__":
+    import sys
+    preview = "--preview" in sys.argv
+    names = [a for a in sys.argv[1:] if not a.startswith("--")] or list(SLIME)
+    for name in names:
+        sim = SLIME[name]()
+        print(name, "Dauer", round(sim.total, 1), "alle verbunden", round(sim.all_t, 1))
+        if preview:
+            ts = [1.5, 5.0, 10.0, 16.0, 22.0, 28.0, 34.0, 40.0, sim.all_t + 0.5, sim.total - 1]
+            render(sim, name, None, preview_dir="output/preview", preview_times=ts)
+        else:
+            out = f"output/{name}_vertical.mp4"
+            render(sim, name, out)
+            print(out)

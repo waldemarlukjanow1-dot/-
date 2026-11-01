@@ -123,25 +123,34 @@ def dot_sprite(r, col):
 
 
 class LoopRenderer:
-    def __init__(self, sim):
+    def __init__(self, sim, bg=None, ring_w=5, ball_scale=1.0):
         self.sim = sim
+        self.bg, self.ball_scale = bg, ball_scale
         k = SS
         yy, xx = np.mgrid[0:H1 * k, 0:W1 * k].astype(np.float32) / k
         vig = 0.35 + 0.65 * np.exp(-(((xx - CX) / 700) ** 2 + ((yy - CY) / 1000) ** 2))
         base = np.array((14, 10, 18), np.float32) * vig[..., None]
         self.base = Image.fromarray(base.astype(np.uint8)).convert("RGBA")
+        if bg is not None:   # animierter Hintergrund: hier nur das Innere abdunkeln (Kontrast für die Spuren)
+            m = Image.new("L", (W1 * k, H1 * k), 0)
+            ImageDraw.Draw(m).ellipse([(CX - B) * k, (CY - A) * k, (CX + B) * k, (CY + A) * k], fill=205)
+            m = m.filter(ImageFilter.GaussianBlur(6 * k))
+            self.base = Image.new("RGBA", (W1 * k, H1 * k), (10, 6, 22, 0))
+            self.base.putalpha(m)
         # Ellipse mit weichem Glow
         ring = Image.new("L", (W1 * k, H1 * k), 0)
         ImageDraw.Draw(ring).ellipse([(CX - B) * k, (CY - A) * k, (CX + B) * k, (CY + A) * k], outline=255,
-                                     width=5 * k)
+                                     width=ring_w * k)
         gl = ring.filter(ImageFilter.GaussianBlur(12 * k))
-        arr = np.asarray(self.base, np.float32)
+        arr = np.asarray(self.base, np.float32).copy()
         # Neon-Rand: Farbe läuft im Kreis um die Ellipse
         ang = (np.arctan2(yy - CY, xx - CX) / (2 * np.pi)) % 1.0
         lut = np.array([neon(i / 256) for i in range(256)], np.float32)
         colr = lut[(ang * 255).astype(np.int32)]
         rg, rr_ = np.asarray(gl, np.float32) / 255, np.asarray(ring, np.float32) / 255
         arr[..., :3] += colr * (rg * 1.6)[..., None] + (colr * 0.55 + 255 * 0.45) * rr_[..., None]
+        if bg is not None:
+            arr[..., 3] = np.maximum(arr[..., 3], np.clip(rg * 1.6 + rr_, 0, 1) * 255)
         self.base = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGBA")
         self.sprites = {}
 
@@ -155,7 +164,11 @@ class LoopRenderer:
         sim = self.sim
         k = SS
         t = (fi + 1) / FPS
-        im = self.base.copy()
+        if self.bg is not None:
+            im = Image.fromarray(self.bg.frame(t)).resize((W1 * k, H1 * k), Image.BILINEAR).convert("RGBA")
+            im.alpha_composite(self.base)
+        else:
+            im = self.base.copy()
         lines = Image.new("RGBA", im.size, (0, 0, 0, 0))
         ld = ImageDraw.Draw(lines, "RGBA")
         d = ImageDraw.Draw(im, "RGBA")
@@ -169,7 +182,7 @@ class LoopRenderer:
         s = u * 2 * A
         lw = max(1, int((3.0 if n < 40 else 2.2 if n < 200 else 1.4) * k))
         la = int((230 if n < 40 else 170 if n < 200 else 110 if n < 600 else 80) * fade)
-        rr = 9.0 if n < 40 else 7.0 if n < 200 else 5.0 if n < 600 else 4.0
+        rr = (9.0 if n < 40 else 7.0 if n < 200 else 5.0 if n < 600 else 4.0) * self.ball_scale
         pos = []
         for th, col, (px, py, d1) in zip(ths, cols, hits):
             if s <= d1:
@@ -216,6 +229,127 @@ class LoopRenderer:
         cnt = n if t <= sim.end_t else len(sim.trips[-1][3])
         dd.text((CX, CY - A - 34), f"{cnt:,}", font=_font(F_BOLD, 34), fill=(255, 255, 255, 200), anchor="mm")
         return out
+
+
+# ------------------------------------------------------------------ Animierter Hintergrund im Vice-City-Sunset-Look
+
+class ViceBackground:
+    """Sonnenuntergang über dem Meer: Verlauf Lila -> Pink -> Orange, Retro-Sonne mit wandernden Streifen,
+    Skyline mit Neon-Fenstern, glitzerndes Wasser und Palmen, die sich leicht im Wind wiegen."""
+
+    HZ = 1290          # Horizont
+
+    def __init__(self, seed=3):
+        rng = np.random.default_rng(seed)
+        yy, xx = np.mgrid[0:H1, 0:W1].astype(np.float32)
+        stops = [(0, (22, 6, 52)), (420, (70, 16, 110)), (820, (170, 40, 135)), (1100, (245, 90, 110)),
+                 (self.HZ, (255, 160, 80))]
+        sky = np.zeros((H1, W1, 3), np.float32)
+        for (y0, c0), (y1, c1) in zip(stops, stops[1:]):
+            m = (yy >= y0) & (yy < y1)
+            f = ((yy - y0) / (y1 - y0))[..., None]
+            sky = np.where(m[..., None], np.array(c0) * (1 - f) + np.array(c1) * f, sky)
+        sea = (yy >= self.HZ)
+        fs = ((yy - self.HZ) / (H1 - self.HZ)).clip(0, 1)[..., None]
+        sky = np.where(sea[..., None], np.array((60, 20, 90)) * (1 - fs) + np.array((12, 6, 34)) * fs, sky)
+        self.sky = sky
+        self.xx, self.yy = xx, yy
+        # Wolkenbänder (weich, ziehen langsam)
+        self.cloud = np.zeros((H1, W1 * 2), np.float32)
+        for _ in range(9):
+            cy, cx = rng.uniform(250, 950), rng.uniform(0, W1 * 2)
+            w, h = rng.uniform(300, 700), rng.uniform(18, 45)
+            Y, X = np.mgrid[0:H1, 0:W1 * 2].astype(np.float32)
+            self.cloud += np.exp(-(((X - cx) / w) ** 2 + ((Y - cy) / h) ** 2)) * rng.uniform(0.25, 0.5)
+        # Skyline (Silhouette + Fenster)
+        sk = Image.new("RGBA", (W1, H1), (0, 0, 0, 0))
+        d = ImageDraw.Draw(sk)
+        x = -20
+        self.windows = []
+        while x < W1 + 20:
+            w = rng.uniform(40, 95)
+            h = rng.uniform(50, 230) * (0.6 if 300 < x < 780 else 1.0)
+            d.rectangle([x, self.HZ - h, x + w, self.HZ], fill=(34, 10, 54, 255))
+            if rng.random() < 0.3:
+                d.rectangle([x + w * 0.4, self.HZ - h - 30, x + w * 0.5, self.HZ - h], fill=(34, 10, 54, 255))
+            for wy in np.arange(self.HZ - h + 10, self.HZ - 8, 14):
+                for wx in np.arange(x + 6, x + w - 6, 12):
+                    if rng.random() < 0.28:
+                        self.windows.append((wx, wy, rng.choice([0, 1, 2]), rng.uniform(0, 6.28)))
+            x += w + rng.uniform(-6, 10)
+        self.skyline = sk
+        self.palms = [(40, 1600, 760, -0.10, 0.0), (140, 1700, 560, 0.06, 1.3), (1010, 1620, 720, 0.12, 2.1),
+                      (930, 1730, 520, -0.05, 0.7)]   # (x, Fuß-y, Höhe, Neigung, Phase)
+
+    def palm(self, d, x, base_y, h, lean, ph, t):
+        sway = 0.035 * math.sin(t * 0.9 + ph) + 0.015 * math.sin(t * 2.1 + ph * 2)
+        pts = []
+        for i in range(13):
+            u = i / 12
+            px = x + (lean + sway) * h * u ** 1.6 + 18 * math.sin(u * 2.5)
+            py = base_y - h * u
+            pts.append((px, py))
+        col = (16, 4, 26)
+        for i in range(12):
+            wdt = 26 - 12 * i / 12
+            d.line([pts[i], pts[i + 1]], fill=col, width=int(wdt))
+        tx, ty = pts[-1]
+        for j in range(9):
+            a = -math.pi / 2 + (j - 4) * 0.42 + sway * 4 + 0.08 * math.sin(t * 1.3 + j + ph)
+            L = h * (0.42 + 0.06 * ((j * 7) % 3))
+            leaf = []
+            for q in range(10):
+                u = q / 9
+                ang = a + (1.3 * u * u) * (1 if math.cos(a) >= 0 else -1)
+                lx = tx + math.cos(ang) * L * u
+                ly = ty + math.sin(ang) * L * u + 0.35 * L * u * u
+                leaf.append((lx, ly))
+            top = [(lx, ly - 26 * math.sin(q / 9 * math.pi) * (1 - 0.4 * q / 9)) for q, (lx, ly) in enumerate(leaf)]
+            bot = [(lx, ly + 16 * math.sin(q / 9 * math.pi) * (1 - 0.4 * q / 9)) for q, (lx, ly) in enumerate(leaf)]
+            d.polygon(top + bot[::-1], fill=col)
+        d.ellipse([tx - 16, ty - 12, tx + 16, ty + 14], fill=col)
+
+    def frame(self, t):
+        HZ = self.HZ
+        img = self.sky.copy()
+        # Wolken ziehen
+        off = int(t * 12) % W1
+        c = self.cloud[:, off:off + W1]
+        img = img + c[..., None] * np.array((255, 150, 190)) * 0.35 * (self.yy < HZ)[..., None]
+        # Retro-Sonne mit nach unten wandernden Streifen
+        sx, sy, R = 540.0, HZ - 120 + 8 * math.sin(t * 0.35), 300.0
+        dist = np.hypot(self.xx - sx, self.yy - sy)
+        f = ((self.yy - (sy - R)) / (2 * R)).clip(0, 1)
+        sun_c = np.array((255, 235, 120)) * (1 - f[..., None]) + np.array((255, 70, 150)) * f[..., None]
+        stripe = np.ones_like(f)
+        band = (self.yy - sy + t * 14) % 46
+        lower = self.yy > sy - R * 0.15
+        thick = 4 + 18 * ((self.yy - (sy - R * 0.15)) / (R * 1.15)).clip(0, 1)
+        stripe[lower & (band < thick)] = 0
+        inside = (dist < R) & (self.yy < HZ)
+        glow = np.exp(-((dist - R).clip(0) / 120) ** 2) * 0.55 * (self.yy < HZ)
+        img = img + glow[..., None] * np.array((255, 120, 140)) * 0.6
+        img = np.where((inside & (stripe > 0))[..., None], sun_c, img)
+        # Wasser: Spiegelung der Sonne als glitzernde Streifen
+        sea = self.yy >= HZ
+        ry = self.yy - HZ
+        wob = np.sin(ry * 0.35 - t * 3.0 + np.sin(self.xx * 0.02 + t) * 2)
+        spread = 140 + ry * 0.9
+        refl = np.exp(-((self.xx - sx) / spread) ** 2) * (wob > 0.55) * np.exp(-ry / 420)
+        img = img + (sea * refl)[..., None] * np.array((255, 170, 140)) * 0.8
+        sparkle = (np.sin(self.xx * 0.9 + ry * 1.7 + t * 6) > 0.985) & sea
+        img = img + sparkle[..., None] * 120
+        im = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)).convert("RGBA")
+        im.alpha_composite(self.skyline)
+        d = ImageDraw.Draw(im, "RGBA")
+        wcol = [(255, 80, 200), (80, 230, 255), (255, 200, 90)]
+        for wx, wy, ci, ph in self.windows:
+            if math.sin(t * 0.7 + ph) > -0.6:
+                d.rectangle([wx, wy, wx + 5, wy + 6], fill=wcol[ci] + (200,))
+        d.line([(0, HZ), (W1, HZ)], fill=(255, 150, 200, 160), width=2)
+        for x, by, h, lean, ph in self.palms:
+            self.palm(d, x, by, h, lean, ph, t)
+        return np.asarray(im.convert("RGB"))
 
 
 # ------------------------------------------------------------------ Klang
@@ -297,9 +431,9 @@ def _chunk(args):
     return out
 
 
-def render(sim, out_path, jobs=4):
+def render(sim, out_path, jobs=4, **rkw):
     global _R
-    _R = LoopRenderer(sim)
+    _R = LoopRenderer(sim, **rkw)
     n = sim.n_frames
     with tempfile.TemporaryDirectory() as tmp:
         bounds = [n * j // jobs for j in range(jobs + 1)]
@@ -316,6 +450,34 @@ def render(sim, out_path, jobs=4):
                         "-c:a", "aac", "-b:a", "192k", "-shortest", "-af", "loudnorm=I=-19:TP=-3:LRA=11",
                         "-movflags", "+faststart", out_path], check=True)
 
+
+VICE_KW = dict(ring_w=10, ball_scale=1.45)
+
+
+def vice_sim():
+    """Etwas schneller, mehr Runden: Bälle fliegen ~20 % schneller."""
+    return EllipseLoop(counts=(2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768,
+                               1024), t_first=2.5, t_min=1.85, shrink=0.97)
+
+
+if __name__ == "__main__" and "--vice" in __import__("sys").argv:
+    import sys
+    sim = vice_sim()
+    print("Dauer", round(sim.total, 1), "Treffen", [round(m, 1) for m in sim.meets])
+    bg = ViceBackground()
+    if "--preview" in sys.argv:
+        R = LoopRenderer(sim, bg=bg, **VICE_KW)
+        ts = [0.5, 2.0, 6.0, 15.0, 30.0, 40.0, sim.end_t - 0.5, sim.total - 1]
+        ims = [R.frame(int(t * FPS)) for t in ts]
+        out = Image.new("RGB", (360 * 4, 640 * 2))
+        for i, im in enumerate(ims):
+            out.paste(im.resize((360, 640)), ((i % 4) * 360, (i // 4) * 640))
+        out.save("output/preview/vice_check.png")
+        tiktok_ui_mock(ims[4], "vertical").save("output/preview/vice_ui.png")
+    else:
+        render(sim, "output/e03_vice_circle_loop_vertical.mp4", bg=bg, **VICE_KW)
+        print("output/e03_vice_circle_loop_vertical.mp4")
+    sys.exit(0)
 
 if __name__ == "__main__":
     import sys

@@ -24,8 +24,8 @@ W1, H1, SS = 1080, 1920, 2
 SR = 44100
 F_BOLD = "/usr/share/fonts/opentype/inter/InterDisplay-Black.otf"
 
-CX, CY = 520.0, 885.0
-A, B = 590.0, 380.0                 # Halbachsen (vertikal, horizontal)
+CX, CY = 520.0, 880.0
+A, B = 470.0, 400.0                 # Halbachsen (vertikal, horizontal) – fast rund
 C = math.sqrt(A * A - B * B)
 FOCI = [(CX, CY - C), (CX, CY + C)]  # oben, unten
 
@@ -39,6 +39,19 @@ def hit_point(f, th):
     c_ = (ox / B) ** 2 + (oy / A) ** 2 - 1
     t = (-b_ + math.sqrt(b_ * b_ - 4 * a_ * c_)) / (2 * a_)
     return f[0] + dx * t, f[1] + dy * t, t
+
+
+NEON = [(255, 30, 150), (190, 40, 255), (40, 120, 255), (0, 240, 255), (40, 255, 120), (230, 255, 30),
+        (255, 150, 0)]
+
+
+def neon(v):
+    """Neonfarbe im Kreis über die Palette (v in 0..1)."""
+    v = (v % 1.0) * len(NEON)
+    i = int(v)
+    f = v - i
+    a, b = NEON[i % len(NEON)], NEON[(i + 1) % len(NEON)]
+    return tuple(int(x + (y - x) * f) for x, y in zip(a, b))
 
 
 def hue(v, s=0.75, l=1.0):
@@ -59,7 +72,7 @@ class EllipseLoop:
                 ths = [math.radians(-35), math.radians(140)]   # wie im Original: zwei Richtungen
             else:
                 ths = [off + 2 * math.pi * j / n for j in range(n)]
-            cols = [hue((th % (2 * math.pi)) / (2 * math.pi) + 0.02 * k) for th in ths]
+            cols = [neon((th % (2 * math.pi)) / (2 * math.pi) + 0.02 * k) for th in ths]
             hits = [hit_point(FOCI[src], th) for th in ths]
             self.trips.append((t, T, src, ths, cols, hits))
             t += T
@@ -121,10 +134,14 @@ class LoopRenderer:
         ring = Image.new("L", (W1 * k, H1 * k), 0)
         ImageDraw.Draw(ring).ellipse([(CX - B) * k, (CY - A) * k, (CX + B) * k, (CY + A) * k], outline=255,
                                      width=5 * k)
-        gl = ring.filter(ImageFilter.GaussianBlur(9 * k))
+        gl = ring.filter(ImageFilter.GaussianBlur(12 * k))
         arr = np.asarray(self.base, np.float32)
-        arr[..., :3] += (np.asarray(gl, np.float32) / 255 * 120)[..., None] + (np.asarray(ring, np.float32) / 255 *
-                                                                               235)[..., None]
+        # Neon-Rand: Farbe läuft im Kreis um die Ellipse
+        ang = (np.arctan2(yy - CY, xx - CX) / (2 * np.pi)) % 1.0
+        lut = np.array([neon(i / 256) for i in range(256)], np.float32)
+        colr = lut[(ang * 255).astype(np.int32)]
+        rg, rr_ = np.asarray(gl, np.float32) / 255, np.asarray(ring, np.float32) / 255
+        arr[..., :3] += colr * (rg * 1.6)[..., None] + (colr * 0.55 + 255 * 0.45) * rr_[..., None]
         self.base = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGBA")
         self.sprites = {}
 
@@ -174,35 +191,16 @@ class LoopRenderer:
         # Brennpunkte
         for fx, fy in FOCI:
             R = 13 * k
-            d.ellipse([fx * k - R, fy * k - R, fx * k + R, fy * k + R], outline=(235, 235, 240, 255), width=3 * k,
+            d.ellipse([fx * k - R, fy * k - R, fx * k + R, fy * k + R], outline=(230, 250, 255, 255), width=3 * k,
                       fill=(14, 10, 18, 255))
-        # Treffen: Regenbogen-Ringe am Brennpunkt
+        # Treffen: nur ein kurzes, weiches Aufleuchten des Brennpunkts
         for j, mt in enumerate(sim.meets):
             e = t - mt
-            if 0 <= e < 1.2:
+            if 0 <= e < 0.35:
                 fx, fy = FOCI[1 - (j % 2)]
-                nn = len(sim.trips[j][3])
-                for q in range(7):
-                    R = (24 + 120 * e ** 0.6 + q * 7) * k
-                    al = int(210 * (1 - e / 1.2) * (1 - q / 8))
-                    d.ellipse([fx * k - R, fy * k - R, fx * k + R, fy * k + R], outline=hue(q / 7 + e) + (al,),
-                              width=3 * k)
-                if e < 0.25:
-                    R = (30 + 40 * e) * k
-                    d.ellipse([fx * k - R, fy * k - R, fx * k + R, fy * k + R],
-                              fill=(255, 255, 255, int(170 * (1 - e / 0.25))))
-        # Schluss: alle Bälle vereint als leuchtende Regenbogen-Kugel im Brennpunkt
-        if t > sim.end_t:
-            e = t - sim.end_t
-            fx, fy = F1
-            a_ = min(1.0, e / 0.6)
-            R = (34 + 4 * math.sin(e * 2.5)) * k
-            for q in range(12):
-                ang0 = q / 12 * 2 * math.pi + e * 0.8
-                d.pieslice([fx * k - R, fy * k - R, fx * k + R, fy * k + R], math.degrees(ang0),
-                           math.degrees(ang0) + 31, fill=hue(q / 12) + (int(235 * a_),))
-            Ri = R * 0.45
-            d.ellipse([fx * k - Ri, fy * k - Ri, fx * k + Ri, fy * k + Ri], fill=(255, 255, 255, int(240 * a_)))
+                R = (16 + 10 * e) * k
+                d.ellipse([fx * k - R, fy * k - R, fx * k + R, fy * k + R],
+                          fill=(255, 255, 255, int(120 * (1 - e / 0.35))))
         # Bälle
         if fade > 0:
             for bx, by, col in pos:
@@ -225,16 +223,18 @@ class LoopRenderer:
 PENTA = [0, 2, 4, 7, 9]
 
 
-def bell(f, dur=1.6):
+def soft(f, dur=1.4, attack=0.012, decay=3.0):
+    """Sehr weicher, runder Ton (fast reiner Sinus, sanfter Anschlag) – wie eine leise Kalimba."""
     t = np.arange(int(SR * dur)) / SR
-    s = (np.sin(2 * np.pi * f * t) * np.exp(-t * 3.2) + 0.3 * np.sin(2 * np.pi * f * 2 * t) * np.exp(-t * 6)
-         + 0.1 * np.sin(2 * np.pi * f * 3 * t) * np.exp(-t * 10))
-    return s * np.minimum(t / 0.004, 1) * 0.3
+    s = np.sin(2 * np.pi * f * t) + 0.18 * np.sin(2 * np.pi * f * 2 * t) * np.exp(-t * 8)
+    return s * np.exp(-t * decay) * np.minimum(t / attack, 1)
 
 
-def pluck(f):
-    t = np.arange(int(SR * 0.35)) / SR
-    return np.sin(2 * np.pi * f * t) * np.exp(-t * 16) * np.minimum(t / 0.002, 1) * 0.22
+def swell(freqs, dur=2.4):
+    """Leise, weiche Akkord-Welle beim Treffen."""
+    t = np.arange(int(SR * dur)) / SR
+    env = np.minimum(t / 0.25, 1) * np.exp(-t * 1.6)
+    return sum(np.sin(2 * np.pi * f * t) / (j + 1.5) for j, f in enumerate(freqs)) * env
 
 
 def build_audio(sim, path):
@@ -242,6 +242,7 @@ def build_audio(sim, path):
     n = int(SR * total)
     out = np.zeros(n + SR * 3)
     last = -1.0
+    scale = [0, 3, 5, 7, 10]            # Moll-Pentatonik: ruhig, nichts klingt schief
 
     def put(t, s, vol):
         i = int(t * SR)
@@ -251,25 +252,25 @@ def build_audio(sim, path):
 
     for t, kind, d in sim.events:
         if kind == "wall":
-            if t - last < 0.05:
+            if t - last < 0.11:
                 continue
             last = t
             v = (d["th"] % (2 * math.pi)) / (2 * math.pi)
             j = int(v * 10)
-            put(t, pluck(523.25 * 2 ** ((PENTA[j % 5] + 12 * (j // 5)) / 12)), 0.4)
+            f = 293.66 * 2 ** ((scale[j % 5] + 12 * (j // 5)) / 12)
+            put(t, soft(f, 1.1, 0.01, 4.5), 0.16)
         else:
             k = d["k"]
-            semi = PENTA[k % 5] + 12 * min(2, k // 5)
-            f = 261.63 * 2 ** (semi / 12)
-            for q, m in enumerate((1.0, 1.5, 2.0)):
-                put(t + q * 0.03, bell(f * m), 0.5 / (q + 1))
+            root = 146.83 * 2 ** ([0, 3, 5, 7, 10, 12][k % 6] / 12)
+            put(t, swell((root, root * 1.5, root * 2, root * 3)), 0.22)
+            put(t, soft(root * 4, 1.8, 0.02, 2.2), 0.12)
     out = out[:n]
     tt = np.arange(n) / SR
-    pad = sum(np.sin(2 * np.pi * f * tt + j) / (j + 2) for j, f in enumerate((130.81, 196.0, 261.63)))
-    mix_ = out + reverb(out, 1.8) * 0.3 + pad * 0.015 * np.minimum(1, tt / 2)
-    mix_ *= np.clip((total - tt) / 1.5, 0, 1)
+    pad = sum(np.sin(2 * np.pi * f * tt + j) / (j + 2) for j, f in enumerate((73.42, 110.0, 146.83)))
+    mix_ = out + reverb(out, 2.2) * 0.35 + pad * 0.02 * np.minimum(1, tt / 3)
+    mix_ *= np.clip((total - tt) / 2.0, 0, 1) * np.minimum(1, tt / 0.5)
     peak = np.max(np.abs(mix_)) or 1
-    mix_ = np.tanh(mix_ / peak * 1.2) * 0.9
+    mix_ = mix_ / peak * 0.6
     st = np.stack([mix_, mix_], axis=1)
     with wave.open(path, "wb") as w:
         w.setnchannels(2)
@@ -312,7 +313,7 @@ def render(sim, out_path, jobs=4):
         wav = os.path.join(tmp, "a.wav")
         build_audio(sim, wav)
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", wav, "-c:v", "copy",
-                        "-c:a", "aac", "-b:a", "192k", "-shortest", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+                        "-c:a", "aac", "-b:a", "192k", "-shortest", "-af", "loudnorm=I=-19:TP=-3:LRA=11",
                         "-movflags", "+faststart", out_path], check=True)
 
 
@@ -330,5 +331,5 @@ if __name__ == "__main__":
         out.save("output/preview/ellipse_check.png")
         tiktok_ui_mock(ims[7], "vertical").save("output/preview/ellipse_ui.png")
     else:
-        render(sim, "output/e01_ellipse_loop_vertical.mp4")
-        print("output/e01_ellipse_loop_vertical.mp4")
+        render(sim, "output/e02_neon_circle_loop_vertical.mp4")
+        print("output/e02_neon_circle_loop_vertical.mp4")

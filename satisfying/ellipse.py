@@ -123,8 +123,9 @@ def dot_sprite(r, col):
 
 
 class LoopRenderer:
-    def __init__(self, sim, bg=None, ring_w=5, ball_scale=1.0):
+    def __init__(self, sim, bg=None, ring_w=5, ball_scale=1.0, intro=None):
         self.sim = sim
+        self.intro = intro          # (Text, Dauer): Einblendung vor dem Start, ohne Bälle
         self.bg, self.ball_scale = bg, ball_scale
         k = SS
         yy, xx = np.mgrid[0:H1 * k, 0:W1 * k].astype(np.float32) / k
@@ -160,7 +161,51 @@ class LoopRenderer:
             self.sprites[key] = dot_sprite(key[0] * SS, col)
         return self.sprites[key]
 
+    def intro_frame(self, t):
+        """Intro: nur Hintergrund + großer Text mit Neon-Herz."""
+        text, dur = self.intro
+        im = Image.fromarray(self.bg.frame(t)).convert("RGBA")
+        dark = Image.new("RGBA", im.size, (8, 4, 20, 90))
+        im.alpha_composite(dark)
+        a = min(1.0, t / 0.25)
+        pop = 1 + 0.18 * max(0.0, 1 - t / 0.35)
+        beat = 1 + 0.06 * max(0.0, math.sin(t * 2 * math.pi * 1.2)) ** 6
+        lay = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        d = ImageDraw.Draw(lay)
+        cx, cy = CX, CY - 60
+        r = 80 * pop * beat
+        heart = []
+        for q in range(80):
+            u = q / 80 * 2 * math.pi
+            hx = 16 * math.sin(u) ** 3
+            hy = 13 * math.cos(u) - 5 * math.cos(2 * u) - 2 * math.cos(3 * u) - math.cos(4 * u)
+            heart.append((cx + hx * r / 16, cy - 40 - hy * r / 16))
+        d.polygon(heart, fill=(255, 40, 140, int(255 * a)))
+        f = _font(F_BOLD, int(118 * pop))
+        d.text((cx, cy + 120), text.split(" ")[0], font=f, fill=(255, 255, 255, int(255 * a)), anchor="mm",
+               stroke_width=6, stroke_fill=(60, 0, 60, int(220 * a)))
+        d.text((cx, cy + 225), " ".join(text.split(" ")[1:]).upper(), font=_font(F_BOLD, int(74 * pop)),
+               fill=(255, 90, 190, int(255 * a)), anchor="mm", stroke_width=5, stroke_fill=(60, 0, 60, int(220 * a)))
+        glow = lay.filter(ImageFilter.GaussianBlur(18))
+        im.alpha_composite(glow)
+        im.alpha_composite(glow)
+        im.alpha_composite(lay)
+        return im.convert("RGB")
+
     def frame(self, fi):
+        t = (fi + 1) / FPS
+        if self.intro is not None:
+            dur = self.intro[1]
+            if t < dur:
+                return self.intro_frame(t)
+            main = self._frame(fi)
+            e = (t - dur) / 0.45
+            if e < 1:   # weicher Übergang
+                return Image.blend(self.intro_frame(t), main, e)
+            return main
+        return self._frame(fi)
+
+    def _frame(self, fi):
         sim = self.sim
         k = SS
         t = (fi + 1) / FPS
@@ -454,20 +499,27 @@ def render(sim, out_path, jobs=4, **rkw):
 VICE_KW = dict(ring_w=10, ball_scale=1.45)
 
 
-def vice_sim():
+def vice_sim(lead=0.9):
     """Etwas schneller, mehr Runden: Bälle fliegen ~20 % schneller."""
     return EllipseLoop(counts=(2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768,
-                               1024), t_first=2.5, t_min=1.85, shrink=0.97)
+                               1024), t_first=2.5, t_min=1.85, shrink=0.97, lead=lead)
+
+
+INTRO = ("1.000.000 Likes", 2.6)
 
 
 if __name__ == "__main__" and "--vice" in __import__("sys").argv:
     import sys
-    sim = vice_sim()
+    likes = "--likes" in sys.argv
+    sim = vice_sim(lead=INTRO[1] + 0.9 if likes else 0.9)
+    if likes:
+        VICE_KW = dict(VICE_KW, intro=INTRO)
     print("Dauer", round(sim.total, 1), "Treffen", [round(m, 1) for m in sim.meets])
     bg = ViceBackground()
     if "--preview" in sys.argv:
         R = LoopRenderer(sim, bg=bg, **VICE_KW)
-        ts = [0.5, 2.0, 6.0, 15.0, 30.0, 40.0, sim.end_t - 0.5, sim.total - 1]
+        ts = ([0.15, 1.0, 2.3, 2.8, 3.6, 5.0, 30.0, sim.total - 1] if likes else
+              [0.5, 2.0, 6.0, 15.0, 30.0, 40.0, sim.end_t - 0.5, sim.total - 1])
         ims = [R.frame(int(t * FPS)) for t in ts]
         out = Image.new("RGB", (360 * 4, 640 * 2))
         for i, im in enumerate(ims):
@@ -475,8 +527,9 @@ if __name__ == "__main__" and "--vice" in __import__("sys").argv:
         out.save("output/preview/vice_check.png")
         tiktok_ui_mock(ims[4], "vertical").save("output/preview/vice_ui.png")
     else:
-        render(sim, "output/e03_vice_circle_loop_vertical.mp4", bg=bg, **VICE_KW)
-        print("output/e03_vice_circle_loop_vertical.mp4")
+        out = "output/e04_vice_loop_likes_intro_vertical.mp4" if likes else "output/e03_vice_circle_loop_vertical.mp4"
+        render(sim, out, bg=bg, **VICE_KW)
+        print(out)
     sys.exit(0)
 
 if __name__ == "__main__":

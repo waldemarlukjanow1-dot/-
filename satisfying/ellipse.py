@@ -458,6 +458,43 @@ def build_audio(sim, path):
         w.writeframes((st * 32767).astype(np.int16).tobytes())
 
 
+def build_plop_audio(sim, path):
+    """Nur ein angenehmes, weiches Plopp: leise an der Wand, etwas voller beim Treffen. Keine Melodie."""
+    from .breaker import plop
+    total = sim.total
+    n = int(SR * total)
+    out = np.zeros(n + SR * 2)
+    rng = np.random.default_rng(2)
+    last = -1.0
+
+    def put(t, s, vol):
+        i = int(t * SR)
+        e = min(len(out), i + len(s))
+        if i < e:
+            out[i:e] += s[: e - i] * vol
+
+    for t, kind, d in sim.events:
+        if kind == "wall":
+            if t - last < 0.09:
+                continue
+            last = t
+            put(t, plop(float(rng.choice((560, 600, 640)))), 0.35)
+        else:
+            put(t, plop(380, big=True), 0.8)
+    out = out[:n]
+    tt = np.arange(n) / SR
+    mix_ = out + reverb(out, 0.6) * 0.08
+    mix_ *= np.clip((total - tt) / 1.5, 0, 1)
+    peak = np.max(np.abs(mix_)) or 1
+    mix_ = mix_ / peak * 0.6
+    st = np.stack([mix_, mix_], axis=1)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes((st * 32767).astype(np.int16).tobytes())
+
+
 # ------------------------------------------------------------------ Ausgabe
 
 _R = None
@@ -476,7 +513,7 @@ def _chunk(args):
     return out
 
 
-def render(sim, out_path, jobs=4, **rkw):
+def render(sim, out_path, jobs=4, audio=None, **rkw):
     global _R
     _R = LoopRenderer(sim, **rkw)
     n = sim.n_frames
@@ -490,7 +527,7 @@ def render(sim, out_path, jobs=4, **rkw):
             for _, _, pth in parts:
                 f.write(f"file '{pth}'\n")
         wav = os.path.join(tmp, "a.wav")
-        build_audio(sim, wav)
+        (audio or build_audio)(sim, wav)
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-i", wav, "-c:v", "copy",
                         "-c:a", "aac", "-b:a", "192k", "-shortest", "-af", "loudnorm=I=-19:TP=-3:LRA=11",
                         "-movflags", "+faststart", out_path], check=True)
@@ -507,6 +544,22 @@ def vice_sim(lead=0.9):
 
 INTRO = ("1.000.000 Likes", 2.6)
 
+
+if __name__ == "__main__" and "--plop" in __import__("sys").argv:
+    import sys
+    sim = vice_sim()
+    print("Dauer", round(sim.total, 1))
+    if "--preview" in sys.argv:
+        R = LoopRenderer(sim, **VICE_KW)
+        ims = [R.frame(int(t * FPS)) for t in (2.0, 20.0, 40.0)]
+        out = Image.new("RGB", (360 * 3, 640))
+        for i, im in enumerate(ims):
+            out.paste(im.resize((360, 640)), (i * 360, 0))
+        out.save("output/preview/plop_check.png")
+    else:
+        render(sim, "output/e05_neon_loop_plop_vertical.mp4", audio=build_plop_audio, **VICE_KW)
+        print("output/e05_neon_loop_plop_vertical.mp4")
+    sys.exit(0)
 
 if __name__ == "__main__" and "--vice" in __import__("sys").argv:
     import sys

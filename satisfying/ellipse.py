@@ -109,6 +109,25 @@ def _font(path, size, cache={}):
     return cache[key]
 
 
+def zigzag_path(pts, amp, step):
+    """Polylinie -> Zickzack: Zacken abwechselnd links/rechts der Strecke, Anfang und Ende bleiben exakt."""
+    out = [pts[0]]
+    side = 1
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        L = math.hypot(x1 - x0, y1 - y0)
+        if L < 1e-6:
+            continue
+        ux, uy = (x1 - x0) / L, (y1 - y0) / L
+        nx, ny = -uy, ux
+        m = int(L // step)
+        for q in range(1, m + 1):
+            d = q * step - step / 2
+            out.append((x0 + ux * d + nx * amp * side, y0 + uy * d + ny * amp * side))
+            side = -side
+        out.append((x1, y1))
+    return out
+
+
 def dot_sprite(r, col):
     n = int(r * 6)
     yy, xx = np.mgrid[0:n, 0:n].astype(np.float32) - n / 2 + 0.5
@@ -123,8 +142,9 @@ def dot_sprite(r, col):
 
 
 class LoopRenderer:
-    def __init__(self, sim, bg=None, ring_w=5, ball_scale=1.0, intro=None):
+    def __init__(self, sim, bg=None, ring_w=5, ball_scale=1.0, intro=None, zigzag=None):
         self.sim = sim
+        self.zigzag = zigzag        # (Amplitude, Zackenlänge) in px: Spuren als Zickzack statt gerade
         self.intro = intro          # (Text, Dauer): Einblendung vor dem Start, ohne Bälle
         self.bg, self.ball_scale = bg, ball_scale
         k = SS
@@ -239,6 +259,8 @@ class LoopRenderer:
                 L = math.hypot(vx, vy)
                 bx, by = px + vx / L * rest, py + vy / L * rest
                 pts = [F0, (px, py), (bx, by)]
+            if self.zigzag:
+                pts = zigzag_path(pts, *self.zigzag)
             ld.line([(x * k, y * k) for x, y in pts], fill=col + (la,), width=lw, joint="curve")
             pos.append((bx, by, col))
         # Spuren weich leuchten lassen
@@ -548,17 +570,22 @@ INTRO = ("1.000.000 Likes", 2.6)
 if __name__ == "__main__" and "--plop" in __import__("sys").argv:
     import sys
     sim = vice_sim()
+    zig = "--zigzag" in sys.argv
+    if zig:
+        VICE_KW = dict(VICE_KW, zigzag=(7.0, 20.0))
     print("Dauer", round(sim.total, 1))
     if "--preview" in sys.argv:
         R = LoopRenderer(sim, **VICE_KW)
         ims = [R.frame(int(t * FPS)) for t in (2.0, 20.0, 40.0)]
+        ims[1].crop((150, 380, 900, 1100)).save("output/preview/plop_zoom.png")
         out = Image.new("RGB", (360 * 3, 640))
         for i, im in enumerate(ims):
             out.paste(im.resize((360, 640)), (i * 360, 0))
         out.save("output/preview/plop_check.png")
     else:
-        render(sim, "output/e05_neon_loop_plop_vertical.mp4", audio=build_plop_audio, **VICE_KW)
-        print("output/e05_neon_loop_plop_vertical.mp4")
+        out = "output/e06_neon_loop_zigzag_vertical.mp4" if zig else "output/e05_neon_loop_plop_vertical.mp4"
+        render(sim, out, audio=build_plop_audio, **VICE_KW)
+        print(out)
     sys.exit(0)
 
 if __name__ == "__main__" and "--vice" in __import__("sys").argv:

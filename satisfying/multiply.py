@@ -177,6 +177,9 @@ class Scene:
         self.rng = np.random.default_rng(seed)
         self.n0 = n0
 
+    def allow(self, n, t):
+        return True
+
     def start(self, P, V):
         for k in range(self.n0):
             P[k] = (CX + (k - (self.n0 - 1) / 2) * 60, CY - 250 + self.rng.uniform(-20, 20))
@@ -208,7 +211,7 @@ class Scene:
                 self.machine(P, V, n, t, touch, impact)
                 collide(P, V, n, r, cell, head, nxt, gw, gh, x0, y0)
                 for i in self.crushed(P, V, n, t, touch, impact):
-                    if n >= N or t - last[i] < self.GAP:
+                    if n >= N or t - last[i] < self.GAP or not self.allow(n, t):
                         continue
                     last[i] = last[n] = t
                     P[n] = P[i] + rng.normal(0, 1.0, 2)
@@ -317,7 +320,9 @@ class Piston(Scene):
 
     def piston_y(self, t):
         """Unterkante des Stampfers: oben warten, schnell runter, kurz halten, langsam hoch."""
-        u = (t % self.BEAT) / self.BEAT
+        u = self.phase(t) % 1.0
+        if u is None:
+            u = 0.0
         top, low = CY - 260, self.FLOOR - 2 * self.R * 0.55
         if u < 0.45:
             f = 0.0
@@ -329,6 +334,9 @@ class Piston(Scene):
             f = 1 - ((u - 0.7) / 0.3)
             f = f * f * (3 - 2 * f)
         return top + (low - top) * f
+
+    def phase(self, t):
+        return t / self.BEAT
 
     def piston_vy(self, t):
         e = 1e-3
@@ -403,6 +411,12 @@ class MultiplyRenderer:
         self.mask = m
         self.splits = [e for e in sc.events if e[1] == "split"]
         self.split_t = [e[0] for e in self.splits]
+        self.miles = []
+        if isinstance(sc, PistonLong):
+            for m in (100, 500, 1000, 2000, 3000):
+                hit = next((e[0] for e in self.splits if e[2]["n"] >= m), None)
+                if hit is not None:
+                    self.miles.append((hit, m))
 
     def poly(self, d, pts, col, hi=None):
         k = SS
@@ -485,7 +499,26 @@ class MultiplyRenderer:
         d = ImageDraw.Draw(out, "RGBA")
         last = [e[0] for e in self.splits if e[0] <= t]
         pop = 1 + 0.12 * max(0.0, 1 - (t - last[-1]) / 0.12) if last else 1.0
-        d.text((CX, CY + R_AR + 74), f"{n:,}", font=_font(F_BOLD, int(54 * pop)), fill=(255, 255, 255, 240),
+        col = (255, 255, 255)
+        ms = [m for m in getattr(self, "miles", []) if m[0] <= t]
+        if ms:
+            e = t - ms[-1][0]
+            if e < 0.6:   # Meilenstein: Zähler wird groß und golden, kurzer Lichtblitz im Ring
+                pop += 0.55 * (1 - e / 0.6) ** 2
+                col = GOLD
+                fl = Image.new("RGBA", out.size, (0, 0, 0, 0))
+                ImageDraw.Draw(fl).ellipse([CX - R_AR, CY - R_AR, CX + R_AR, CY + R_AR], outline=GOLD + (255,),
+                                           width=18)
+                fl = fl.filter(ImageFilter.GaussianBlur(14))
+                a_ = np.asarray(fl, np.float32)
+                arr = np.asarray(out, np.float32) + a_[..., :3] * (a_[..., 3:] / 255) * (1 - e / 0.6) * 1.4
+                out = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+                d = ImageDraw.Draw(out, "RGBA")
+        if getattr(sc, "STOP", None) and t > sc.STOP + 1.2:
+            e = min(1.0, (t - sc.STOP - 1.2) / 0.5)
+            col = GOLD
+            pop = 1 + 0.35 * e
+        d.text((CX, CY + R_AR + 74), f"{n:,}", font=_font(F_BOLD, int(54 * pop)), fill=col + (240,),
                anchor="mm")
         return out
 
@@ -505,6 +538,24 @@ def build_audio(sc, path):
         i = int(t * SR)
         e = min(len(out), i + len(s))
         out[i:e] += s[: e - i] * 0.45
+    if isinstance(sc, PistonLong):
+        sp = [e for e in sc.events if e[1] == "split"]
+        for m in (100, 500, 1000, 2000, 3000):
+            hit = next((e[0] for e in sp if e[2]["n"] >= m), None)
+            if hit is not None:
+                for j, f in enumerate((300, 400, 520)):
+                    s_ = plop(f, big=True)
+                    i = int((hit + j * 0.08) * SR)
+                    out[i:i + len(s_)] += s_[: max(0, len(out) - i)][: len(out[i:i + len(s_)])] * 0.7
+        # Stampfer-Aufschlag: tiefes, weiches Plopp bei jedem Schlag
+        tt = 0.0
+        while tt < sc.STOP + 1:
+            ph = sc.phase(tt)
+            if ph % 1.0 > 0.58 and sc.phase(tt - 1 / FPS) % 1.0 <= 0.58:
+                s_ = plop(160, big=True)
+                i = int(tt * SR)
+                out[i:i + len(s_)] += s_[: max(0, len(out) - i)][: len(out[i:i + len(s_)])] * 0.35
+            tt += 1 / FPS
     out = out[:n]
     mix_ = out + reverb(out, 0.6) * 0.08
     peak = np.max(np.abs(mix_)) or 1
@@ -553,9 +604,44 @@ def render(sc, out_path, jobs=4):
                         "-movflags", "+faststart", out_path], check=True)
 
 
+class PistonLong(Piston):
+    """Lange TikTok-Version: Takt wird immer schneller, Meilensteine, am Ende bleibt der Stampfer oben."""
+    CAP = 4200
+    DUR = 47.0
+    B0, B1, TB = 1.0, 0.42, 34.0     # Takt von 1,0 s auf 0,42 s bis Sekunde 34
+    STOP = 43.0
+
+    def phase(self, t):
+        k = (self.B1 - self.B0) / self.TB
+        if t <= self.TB:
+            return math.log((self.B0 + k * t) / self.B0) / k
+        return math.log(self.B1 / self.B0) / k + (t - self.TB) / self.B1
+
+    def piston_y(self, t):
+        if t >= self.STOP:   # Ausklang: erst die laufende Bewegung beenden, dann oben bleiben
+            ph = self.phase(self.STOP)
+            t_end = self.STOP + (math.ceil(ph) - ph) * self.B1
+            if t >= t_end:
+                return CY - 260
+        return Piston.piston_y(self, t)
+
+    N_END, T_END = 3000, 42.0
+
+    def allow(self, n, t):
+        """Wachstum folgt einer glatten Exponentialkurve (zerdrückt wird trotzdem nur echt Eingeklemmtes)."""
+        return n < 3 + (self.N_END - 3) * (min(t, self.T_END) / self.T_END) ** 2.4 + 1
+
+    def crushed(self, P, V, n, t, touch, impact):
+        if t >= self.STOP + 1.0:
+            return np.zeros(0, np.int64)
+        return Piston.crushed(self, P, V, n, t, touch, impact)
+
+
 SCENES = {"m01_crusher_rollers": lambda: Rollers(1, n0=3),
           "m02_spinning_blade": lambda: Blade(2, n0=3),
-          "m03_piston_press": lambda: Piston(3, n0=5)}
+          "m03_piston_press": lambda: Piston(3, n0=5),
+          "m04_piston_press_long": lambda: PistonLong(SEED_LONG, n0=3)}
+SEED_LONG = 1
 
 if __name__ == "__main__":
     import sys

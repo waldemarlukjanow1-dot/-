@@ -4,6 +4,7 @@ erreicht er die OVERFLOW-Linie, läuft die Arena über.
 
 Physik mit numba: Bälle (Schwerkraft, Stoß an Kreiswand, Rampen und Paddel, Ball-Ball über ein Raster).
 """
+import bisect
 import math
 import os
 import subprocess
@@ -102,8 +103,9 @@ def poly_push(poly, x, y, r):
 
 @njit(cache=True)
 def step(P, V, n, pad, ramp0, ramp1, th_w, dt, split_flag, rest):
-    """Ein Teilschritt für n Bälle. split_flag[i]=1 wenn Ball i vom Paddel kräftig getroffen wurde."""
+    """Ein Teilschritt für n Bälle. split_flag[i]=1 wenn Ball i zwischen Paddel und Rampe zerdrückt wird."""
     for i in range(n):
+        on_ramp = False
         V[i, 1] += G * dt
         P[i, 0] += V[i, 0] * dt
         P[i, 1] += V[i, 1] * dt
@@ -129,6 +131,7 @@ def step(P, V, n, pad, ramp0, ramp1, th_w, dt, split_flag, rest):
                     V[i, 0] -= (1 + rest) * vn * nx
                     V[i, 1] -= (1 + rest) * vn * ny
                     V[i, 0] *= 0.995
+                on_ramp = True
         # Nabe (Drehpunkt-Scheibe)
         dx, dy = P[i, 0] - PX, P[i, 1] - PY
         d = math.sqrt(dx * dx + dy * dy)
@@ -153,8 +156,9 @@ def step(P, V, n, pad, ramp0, ramp1, th_w, dt, split_flag, rest):
                 rvx -= (1 + 0.85) * vn * nx
                 rvy -= (1 + 0.85) * vn * ny
                 V[i, 0], V[i, 1] = rvx + sx, rvy + sy
-                if -vn > 260:
-                    split_flag[i] = 1
+            # zerdrückt: gleichzeitig am Paddel und an der Rampe, Paddel drückt in Richtung dieser Rampe
+            if on_ramp and abs(th_w) > 0.15 and (P[i, 0] - PX) * th_w > 0:
+                split_flag[i] = 1
         # Tempo begrenzen
         sp = math.sqrt(V[i, 0] ** 2 + V[i, 1] ** 2)
         if sp > 1700:
@@ -206,9 +210,17 @@ def collide(P, V, n, cell, head, nxt, gw, gh, x0, y0):
 
 
 class OverflowSim:
-    def __init__(self, seed, n_cap=2600, total=50.0, sub=8, split_gap=0.12, rest=0.55, outro=4.5):
+    def __init__(self, seed, n_cap=2600, total=50.0, sub=8, split_gap=0.25, rest=0.55, outro=4.5):
         self.rng = np.random.default_rng(seed)
         self.n_cap, self.total, self.sub, self.split_gap, self.rest, self.outro = n_cap, total, sub, split_gap, rest, outro
+
+    def paddle(self, t):
+        """Schwingt bis total, danach läuft das Paddel weich aus und bleibt senkrecht stehen."""
+        if t < self.total:
+            return paddle_angle(t), paddle_omega(t)
+        e = min(1.0, (t - self.total) / 2.5)
+        f = (1 - e) ** 2
+        return paddle_angle(t) * f, paddle_omega(t) * f
 
     def run(self):
         rng = self.rng
@@ -235,41 +247,32 @@ class OverflowSim:
         n_fr = int((self.total + self.outro) * FPS)
         for fi in range(n_fr):
             for _ in range(self.sub):
-                th = paddle_angle(t) if self.over_t is None or t < self.over_t + 1.0 else \
-                    paddle_angle(self.over_t + 1.0) * max(0.0, 1 - (t - self.over_t - 1.0) / 2.0)
-                w = paddle_omega(t) if self.over_t is None or t < self.over_t + 1.0 else 0.0
+                th, w = self.paddle(t)
                 pad = paddle_poly(th)
                 flag[:n] = 0
                 step(P, V, n, pad, ramp0, ramp1, w, dt, flag, self.rest)
                 collide(P, V, n, cell, head, nxt, gw, gh, x0, y0)
-                if self.over_t is None:
+                if t < self.total:
                     hits = np.nonzero(flag[:n])[0]
                     for i in hits:
                         if n >= N or t - last_split[i] < self.split_gap:
                             continue
                         last_split[i] = t
-                        a = math.atan2(V[i, 1], V[i, 0]) + rng.uniform(-0.6, 0.6)
-                        sp = math.hypot(V[i, 0], V[i, 1]) * rng.uniform(0.85, 1.05)
+                        # zerdrückter Ball platzt in zwei: beide schießen nach oben zur Mitte heraus
+                        side = 1.0 if P[i, 0] > PX else -1.0
+                        for j in (i, n):
+                            a = -math.pi / 2 - side * rng.uniform(0.15, 0.75)
+                            sp = rng.uniform(650, 950)
+                            V[j] = (math.cos(a) * sp, math.sin(a) * sp)
                         P[n] = P[i] + rng.normal(0, 1.5, 2)
-                        V[n] = (math.cos(a) * sp, math.sin(a) * sp)
                         born[n] = t
                         gen[n] = gen[i] + 1
                         last_split[n] = t
-                        self.events.append((t, "split", {"n": n + 1}))
+                        self.events.append((t, "split", {"n": n + 1, "x": float(P[i, 0]), "y": float(P[i, 1])}))
                         n += 1
                 t += dt
-            # Füllstand: Höhe der langsamen, liegenden Bälle (oberes Perzentil)
-            slow = np.hypot(V[:n, 0], V[:n, 1]) < 180
-            lvl = float(np.percentile(P[:n][slow, 1], 3)) if slow.sum() > 40 else CY + R_AR
-            self.level.append(lvl)
-            if self.over_t is None and slow.sum() > 40 and lvl < OVER_Y:
-                self.over_t = t
-                self.events.append((t, "over", {"n": n}))
-            self.frames.append((P[:n].astype(np.float32).copy(), born[:n].astype(np.float32).copy(), paddle_angle(t)
-                                if self.over_t is None or t < self.over_t + 1.0 else
-                                paddle_angle(self.over_t + 1.0) * max(0.0, 1 - (t - self.over_t - 1.0) / 2.0)))
-            if self.over_t is not None and t > self.over_t + self.outro:
-                break
+            self.frames.append((P[:n].astype(np.float32).copy(), born[:n].astype(np.float32).copy(),
+                                self.paddle(t)[0]))
         self.n_frames = len(self.frames)
         self.dur = self.n_frames / FPS
         return self
@@ -297,6 +300,8 @@ def ball_col(i):
 class OverflowRenderer:
     def __init__(self, sim):
         self.sim = sim
+        self.splits = [e for e in sim.events if e[1] == "split"]
+        self.split_t = [e[0] for e in self.splits]
         k = SS
         yy, xx = np.mgrid[0:H1 * k, 0:W1 * k].astype(np.float32) / k
         f = (yy / H1)[..., None]
@@ -340,17 +345,6 @@ class OverflowRenderer:
         n = len(Pn)
         im = self.base.copy()
         d = ImageDraw.Draw(im, "RGBA")
-        # OVERFLOW-Linie
-        lvl = sim.level[fi]
-        near = max(0.0, min(1.0, 1 - (lvl - OVER_Y) / 220))
-        over = sim.over_t is not None and t >= sim.over_t
-        hw = math.sqrt(max(0.0, R_AR ** 2 - (OVER_Y - CY) ** 2))
-        col = (255, 70, 90) if over or near > 0.8 else (255, 255, 255)
-        al = int(140 + 115 * near) if not over else int(255 * (0.6 + 0.4 * math.sin(t * 14)))
-        x = CX - hw
-        while x < CX + hw:
-            d.line([x * k, OVER_Y * k, min(x + 16, CX + hw) * k, OVER_Y * k], fill=col + (al,), width=3 * k)
-            x += 28
         # Bälle
         r = R_B * k
         for i in range(n):
@@ -378,35 +372,45 @@ class OverflowRenderer:
         dl.ellipse([(PX - HUB_R) * k, (PY - HUB_R) * k, (PX + HUB_R) * k, (PY + HUB_R) * k], fill=(255, 150, 120, 255))
         dl.ellipse([(PX - 9) * k, (PY - 9) * k, (PX + 9) * k, (PY + 9) * k], outline=(120, 40, 60, 255), width=3 * k)
         im.paste(lay, (0, 0), Image.composite(lay.getchannel("A"), Image.new("L", lay.size, 0), self.mask))
+        # Quetsch-Effekt: kleiner weißer Blitz + Ring, wo ein Ball zerdrückt wird
+        d = ImageDraw.Draw(im, "RGBA")
+        lo = bisect.bisect_left(self.split_t, t - 0.3)
+        hi = bisect.bisect_right(self.split_t, t)
+        for t0, _, dd in self.splits[lo:hi][-60:]:
+            e = (t - t0) / 0.3
+            x, y = dd["x"] * k, dd["y"] * k
+            R = (6 + 22 * e) * k
+            d.ellipse([x - R, y - R, x + R, y + R], outline=(255, 255, 255, int(220 * (1 - e))), width=2 * k)
+            if e < 0.4:
+                R2 = 9 * k * (1 - e / 0.4)
+                d.ellipse([x - R2, y - R2, x + R2, y + R2], fill=(255, 255, 255, int(230 * (1 - e / 0.4))))
         out = im.convert("RGB").reduce(SS)
         arr = np.asarray(out, np.float32)
         g = out.resize((W1 // 6, H1 // 6), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4)).resize((W1, H1))
         arr = arr + np.clip(np.asarray(g, np.float32) - 50, 0, 255) * 0.35
         out = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
-        self.hud(out, t, n, over)
+        self.hud(out, t, n)
         return out
 
-    def hud(self, im, t, n, over):
+    def hud(self, im, t, n):
         sim = self.sim
         d = ImageDraw.Draw(im, "RGBA")
-        d.text((CX, 300), "Will It Overflow?", font=_font(F_BOLD, 66), fill=(255, 255, 255, 255), anchor="mm")
-        d.text((CX, 362), "every hit splits a ball", font=_font(F_SEMI, 32), fill=(190, 185, 215, 255), anchor="mm")
-        hw = math.sqrt(max(0.0, R_AR ** 2 - (OVER_Y - CY) ** 2))
-        d.text((CX + hw - 34, OVER_Y - 18), "OVERFLOW", font=_font(F_BOLD, 22),
-               fill=(255, 90, 110, 230) if over else (255, 255, 255, 170), anchor="rm")
-        # Zähler unter der Arena
-        d.text((CX, CY + R_AR + 74), f"{n:,}", font=_font(F_BOLD, 50), fill=(255, 255, 255, 240), anchor="mm")
+        d.text((CX, 300), "Squeeze = Split", font=_font(F_BOLD, 66), fill=(255, 255, 255, 255), anchor="mm")
+        d.text((CX, 362), "only crushed balls multiply", font=_font(F_SEMI, 32), fill=(190, 185, 215, 255),
+               anchor="mm")
+        done = t >= sim.total + 1.0
+        pop = 1 + 0.25 * max(0.0, 1 - (t - sim.total - 1.0) / 0.3) if done else 1.0
+        d.text((CX, CY + R_AR + 74), f"{n:,}", font=_font(F_BOLD, int(50 * pop)),
+               fill=(255, 220, 90, 255) if done else (255, 255, 255, 240), anchor="mm")
         d.text((CX, CY + R_AR + 116), "BALLS", font=_font(F_SEMI, 24), fill=(170, 165, 200, 230), anchor="mm")
-        if over:
-            e = t - sim.over_t
-            a = min(1.0, e / 0.35)
-            sc = 1 + 0.2 * max(0.0, 1 - e / 0.3)
-            d.rounded_rectangle([CX - 330, CY - 120, CX + 330, CY + 20], radius=32, fill=(15, 8, 25, int(225 * a)),
-                                outline=(255, 90, 110, int(220 * a)), width=4)
-            d.text((CX, CY - 72), "IT OVERFLOWED!", font=_font(F_BOLD, int(62 * sc)),
-                   fill=(255, 90, 110, int(255 * a)), anchor="mm")
-            d.text((CX, CY - 18), f"after {sim.over_t:.1f} seconds", font=_font(F_SEMI, 32),
-                   fill=(255, 255, 255, int(235 * a)), anchor="mm")
+        if done:
+            a = min(1.0, (t - sim.total - 1.0) / 0.4)
+            d.rounded_rectangle([CX - 300, CY - 230, CX + 300, CY - 90], radius=32, fill=(15, 8, 25, int(225 * a)),
+                                outline=(255, 220, 90, int(220 * a)), width=4)
+            d.text((CX, CY - 182), "FINAL COUNT", font=_font(F_SEMI, 32), fill=(255, 255, 255, int(235 * a)),
+                   anchor="mm")
+            d.text((CX, CY - 128), f"{n:,} BALLS", font=_font(F_BOLD, 60), fill=(255, 220, 90, int(255 * a)),
+                   anchor="mm")
 
 
 # ------------------------------------------------------------------ Klang: nur weiches Ploppen
@@ -430,9 +434,8 @@ def build_audio(sim, path):
             last = t
             f = 420 + 380 * min(1.0, math.log10(max(1, d["n"])) / 3.6)
             put(t, plop(round(f / 20) * 20), 0.45)
-        elif kind == "over":
-            for j, f in enumerate((300, 380, 480)):
-                put(t + j * 0.11, plop(f, big=True), 0.9)
+    for j, f in enumerate((300, 380, 480)):
+        put(sim.total + 1.0 + j * 0.11, plop(f, big=True), 0.9)
     out = out[:n]
     tt = np.arange(n) / SR
     mix_ = out + reverb(out, 0.6) * 0.08
@@ -485,18 +488,18 @@ def render(sim, out_path, jobs=4):
                         "-movflags", "+faststart", out_path], check=True)
 
 
-SEED_OVER = 0
+SEED_OVER = 4
 
 if __name__ == "__main__":
     import sys
     import time
     t0 = time.time()
-    sim = OverflowSim(SEED_OVER, n_cap=4200, total=60.0).run()
-    print("Sim", round(time.time() - t0, 1), "s, overflow", sim.over_t, "Dauer", round(sim.dur, 1),
+    sim = OverflowSim(SEED_OVER, n_cap=4200, total=46.0).run()
+    print("Sim", round(time.time() - t0, 1), "s, Dauer", round(sim.dur, 1),
           "Bälle", len(sim.frames[-1][0]))
     if "--preview" in sys.argv:
         R = OverflowRenderer(sim)
-        ts = [1.0, 10.0, 25.0, 38.0, sim.over_t + 0.6, sim.dur - 0.2]
+        ts = [1.0, 10.0, 25.0, 38.0, 45.0, sim.dur - 0.2]
         t1 = time.time()
         ims = [R.frame(min(sim.n_frames - 1, int(x * FPS))) for x in ts]
         print("render/frame", round((time.time() - t1) / len(ts), 2))
@@ -506,5 +509,5 @@ if __name__ == "__main__":
         out.save("output/preview/overflow_check.png")
         tiktok_ui_mock(ims[2], "vertical").save("output/preview/overflow_ui.png")
     else:
-        render(sim, "output/o01_will_it_overflow_vertical.mp4")
-        print("output/o01_will_it_overflow_vertical.mp4")
+        render(sim, "output/o02_squeeze_split_vertical.mp4")
+        print("output/o02_squeeze_split_vertical.mp4")

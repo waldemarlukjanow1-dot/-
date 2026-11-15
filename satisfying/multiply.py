@@ -209,7 +209,10 @@ class Scene:
                 integrate(P, V, n, dt, self.GRAV, self.VMIN)
                 wall(P, V, n, r, self.WALL_REST, self.KICK)
                 self.machine(P, V, n, t, touch, impact)
-                collide(P, V, n, r, cell, head, nxt, gw, gh, x0, y0)
+                for _ in range(getattr(self, "CITER", 1)):   # mehr Durchgänge = Stöße pflanzen sich besser fort
+                    collide(P, V, n, r, cell, head, nxt, gw, gh, x0, y0)
+                    if getattr(self, "CITER", 1) > 1:          # nach jedem Durchgang: niemand verlässt den Kreis
+                        wall(P, V, n, r, self.WALL_REST, 0.0)
                 for i in self.crushed(P, V, n, t, touch, impact):
                     if n >= N or t - last[i] < self.GAP or not self.allow(n, t):
                         continue

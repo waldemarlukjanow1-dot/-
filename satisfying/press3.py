@@ -13,7 +13,7 @@ from . import press2 as P2
 
 PAD_HW = 150.0                      # halbe Breite des Katapult-Kolbens
 PAD_REST = CY + R_AR - 62           # Oberkante in Ruhe
-PAD_LIFT = 118.0
+PAD_LIFT = 185.0
 JAW_Y0, JAW_Y1 = CY - R_AR - 10, CY - 230  # Pressbacken ganz oben am Rand
 GAP_OPEN, GAP_SHUT = 420.0, 14.0
 
@@ -23,7 +23,7 @@ class CatapultPress(Scene):
     CAP = 3000
     DUR = 80.0
     SUB = 8
-    BEAT = 1.9
+    BEAT = 1.25
     GAP = 1.0                        # jeder Ball höchstens einmal pro Pressvorgang
     N_FULL = 2850
     OUTRO = 4.0
@@ -39,7 +39,7 @@ class CatapultPress(Scene):
 
     def start(self, P, V):
         for k in range(self.n0):
-            P[k] = (CX - 30 + 60 * k, PAD_REST - 60 - 30 * k)
+            P[k] = (CX - (self.n0 - 1) * 15 + 30 * k, PAD_REST - 60 - 30 * k)
             V[k] = (0.0, 0.0)
 
     # ---------------------------------------------------------------- Bewegungen
@@ -65,10 +65,24 @@ class CatapultPress(Scene):
         if self.full_t is not None and t >= self.full_t:
             e = min(1.0, (t - self.full_t) / 0.8)   # Ende: Backen schließen sich zum Deckel, Kreis ist voll
             return self._gap_full + (GAP_SHUT - self._gap_full) * e * e * (3 - 2 * e)
+        tj = getattr(self, "_jaw_t", None)
+        if self.REACTIVE:   # Presse reagiert: schnappt zu, sobald Bälle oben in ihrem Bereich ankommen
+            e = 99.0 if tj is None else t - tj
+            if e < 0.22:
+                v = e / 0.22
+                f = v * v
+            elif e < 0.36:
+                f = 1.0
+            elif e < 0.69:
+                v = (e - 0.36) / 0.33
+                f = 1 - v * v * (3 - 2 * v)
+            else:
+                f = 0.0
+            return GAP_OPEN + (GAP_SHUT - GAP_OPEN) * f
         u = self.u(t) * self.BEAT
         if u < 0.74:
             f = 0.0
-        elif u < 0.98:                      # zuschnappen, wenn die Bälle oben am Scheitelpunkt schweben
+        elif u < 0.98:
             v = (u - 0.74) / 0.24
             f = v * v
         elif u < 1.12:
@@ -97,6 +111,8 @@ class CatapultPress(Scene):
                         np.float64)
 
     SCRIPTED_LAUNCH = False
+    REACTIVE = True
+    CITER = 10
     CUP = 2000.0                     # die ganze Säule über dem Kolben wird geschleudert
 
     def launch(self, P, V, n, t):
@@ -116,6 +132,14 @@ class CatapultPress(Scene):
             self.events.append((t, "launch", {"n": int(len(idx))}))
 
     def machine(self, P, V, n, t, touch, impact):
+        if self.REACTIVE and self.full_t is None:
+            tj = getattr(self, "_jaw_t", None)
+            if tj is None or t - tj > 0.85:
+                m = (P[:n, 1] > JAW_Y0) & (P[:n, 1] < JAW_Y1 - self.R) & (np.abs(P[:n, 0] - CX) < GAP_OPEN / 2 - 20) \
+                    & (V[:n, 1] > -220)
+                if m.any():
+                    self._jaw_t = t
+                    self.events.append((t + 0.22, "snap", {}))
         if self.SCRIPTED_LAUNCH:   # alt: Geschwindigkeit wurde gesetzt – jetzt rein physikalisch über den Kolben
             self.launch(P, V, n, t)
         poly_body(P, V, n, self.R, self.pad(self.pad_y(t)), 0.0, self.vel(self.pad_y, t), 0.0, 0.0, 0.0, 0.05,
@@ -273,6 +297,9 @@ def build_audio(sc, path):
     for t, kind, d in sc.events:
         if kind == "full":   # kein Schluss-Sound (Wunsch)
             continue
+        if kind == "snap":
+            put(t, plop(160, big=True), 0.35)
+            continue
         if kind != "split":
             continue
         if t - last < 0.05:
@@ -284,7 +311,8 @@ def build_audio(sc, path):
     b = 0
     while b * sc.BEAT < end:
         put(b * sc.BEAT, plop(120, big=True), 0.3)              # Katapult
-        put(b * sc.BEAT + 0.98, plop(160, big=True), 0.35)      # Presse schnappt zu
+        if not getattr(sc, "REACTIVE", False):
+            put(b * sc.BEAT + 0.98, plop(160, big=True), 0.35)  # Presse schnappt zu
         b += 1
     out = out[:n]
     mix_ = out + reverb(out, 0.6) * 0.08
@@ -329,12 +357,12 @@ SEED_CP = 1
 
 if __name__ == "__main__":
     import sys
-    sc = CatapultPress(SEED_CP).run()
+    sc = CatapultPress(SEED_CP, n0=6).run()
     print("voll bei", sc.full_t, "Dauer", sc.n_frames / FPS,
           [len(sc.frames[min(sc.n_frames - 1, k * FPS)][0]) for k in range(0, 80, 5)])
     if "--preview" in sys.argv:
         R = CatapultRenderer(sc)
-        ts = [0.5, 0.95, 6.0, 15.0, 30.0, sc.n_frames / FPS - 0.1]
+        ts = [0.5, 0.95, 10.0, 25.0, 45.0, sc.n_frames / FPS - 0.1]
         ims = [R.frame(min(sc.n_frames - 1, int(x * FPS))) for x in ts]
         out = Image.new("RGB", (360 * 3, 640 * 2))
         for i, im in enumerate(ims):
@@ -342,5 +370,5 @@ if __name__ == "__main__":
         out.save("output/preview/p3_check.png")
         tiktok_ui_mock(ims[4], "vertical").save("output/preview/p3_ui.png")
     else:
-        render(sc, "output/m07_catapult_press_vertical.mp4")
-        print("output/m07_catapult_press_vertical.mp4")
+        render(sc, "output/m08_catapult_press_physics_vertical.mp4")
+        print("output/m08_catapult_press_physics_vertical.mp4")

@@ -6,3 +6,6 @@
   weil der Kolben sie anschiebt (Reaktion auf die Kolbenbewegung). In `press3.py`: `SCRIPTED_LAUNCH = False`.
 - Weiterhin: Zähler unter dem Kreis, Ton = weiches Plopp (Zerquetschen) + tiefes Plopp (Presse/Katapult),
   keine Überschrift, Kreis soll am Ende bis zum Rand voll sein, Spannung früh aufbauen.
+- **Arc Box (Vorbild "The Bouncing Ball"):** Jeder Halbkreis hängt mit EINEM Ende an einer Ecke des Vierecks und
+  dreht sich um diese Ecke. Der Halbkreis quetscht die Bälle an die Wand des Vierecks – nur so eingeklemmte Bälle
+  verdoppeln sich (pro Ball), die zwei bekommen die nächste Farbe.

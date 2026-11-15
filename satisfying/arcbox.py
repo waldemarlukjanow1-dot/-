@@ -28,8 +28,10 @@ CX, CY = 520.0, 870.0
 HALF = 340.0                                      # halbe Kantenlänge des Rahmens
 X0, X1, Y0, Y1 = CX - HALF, CX + HALF, CY - HALF, CY + HALF
 CORNERS = [(X0, Y0), (X1, Y0), (X1, Y1), (X0, Y1)]
-ARC_R = 0.68 * HALF                               # Radius der Bögen
-ARC_W = 14.0                                      # Dicke der Bögen
+ARC_D = 1.25 * HALF                               # Durchmesser der Halbkreise
+ARC_R = ARC_D / 2
+SIDE = (1, 1, 1, 1)                               # Wölbungsrichtung je Ecke
+ARC_W = 16.0                                      # Dicke der Bögen
 SPAN = math.pi                                    # Halbkreis
 GEN_COLS = [(90, 255, 110), (255, 50, 120), (225, 40, 255), (40, 110, 255), (255, 210, 40), (0, 230, 255),
             (255, 120, 30), (180, 90, 255)]
@@ -53,8 +55,9 @@ def box_walls(P, V, n, r):
 
 
 @njit(cache=True)
-def arc_hit(P, V, n, r, px, py, a0, om, hit):
-    """Ball gegen rotierenden Halbkreis-Bogen (Mittelpunkt = Eckpunkt px,py; Bogen von a0 bis a0+SPAN)."""
+def arc_hit(P, V, n, r, px, py, a0, om, hit, qx0, qy0, ARC_R):
+    """Ball gegen Halbkreis-Bogen mit Mittelpunkt (px,py), Radius ARC_R, Bogen von a0 bis a0+SPAN.
+    Der Bogen dreht sich um den Gelenkpunkt (qx0,qy0) mit Winkelgeschwindigkeit om."""
     for i in range(n):
         dx, dy = P[i, 0] - px, P[i, 1] - py
         d = math.sqrt(dx * dx + dy * dy)
@@ -85,7 +88,7 @@ def arc_hit(P, V, n, r, px, py, a0, om, hit):
         if pen > 0:
             P[i, 0] += nx * pen
             P[i, 1] += ny * pen
-            sx, sy = -om * (cy - py), om * (cx - px)      # Geschwindigkeit der Bogenoberfläche
+            sx, sy = -om * (cy - qy0), om * (cx - qx0)    # Geschwindigkeit der Bogenoberfläche
             rvx, rvy = V[i, 0] - sx, V[i, 1] - sy
             vn = rvx * nx + rvy * ny
             if vn < 0:
@@ -109,9 +112,9 @@ class ArcBox:
     R = 11.0
     CAP = 2600
     SUB = 6
-    SPEED = 400.0
-    GAP = 0.6                     # ein Ball kann sich höchstens alle 0,6 s teilen
-    OMS = (1.35, -1.15, 1.5, -1.25)   # Drehgeschwindigkeit der vier Bögen (rad/s), abwechselnde Richtung
+    SPEED = 480.0
+    GAP = 0.35                     # ein Ball kann sich höchstens alle 0,35 s teilen
+    OMS = (1.9, -1.6, 2.1, -1.75)   # Drehgeschwindigkeit der vier Bögen (rad/s), abwechselnde Richtung
     PH = (0.3, 2.0, 4.0, 5.3)
     N_FULL = 1500
     DUR = 70.0
@@ -122,6 +125,13 @@ class ArcBox:
 
     def arc_angle(self, k, t):
         return self.PH[k] + self.OMS[k] * self.spin(t)
+
+    def arc_geom(self, k, t):
+        """Halbkreis, dessen eines Ende am Eckpunkt hängt: Mittelpunkt, Startwinkel des Bogens."""
+        px, py = CORNERS[k]
+        th = self.arc_angle(k, t)
+        cx, cy = px + math.cos(th) * ARC_R, py + math.sin(th) * ARC_R
+        return cx, cy, th + math.pi          # Bogen von der Ecke (th+pi) bis zum fernen Ende (th+2pi)
 
     def spin(self, t):
         """Bögen drehen bis 'voll', danach laufen sie weich aus."""
@@ -148,7 +158,7 @@ class ArcBox:
         P, V = np.zeros((N, 2)), np.zeros((N, 2))
         gen = np.zeros(N, np.int64)
         last = np.full(N, -9.0)
-        P[0] = (CX + 120, CY + 60)
+        P[0] = (X1 - 60, Y1 - 120)
         a = math.radians(-35)
         V[0] = (math.cos(a) * self.SPEED, math.sin(a) * self.SPEED)
         n = 1
@@ -166,8 +176,13 @@ class ArcBox:
             for _ in range(self.SUB):
                 P[:n] += V[:n] * dt
                 hit[:n] = 0
-                for k, (px, py) in enumerate(CORNERS):
-                    arc_hit(P, V, n, r, px, py, self.arc_angle(k, t), self.omega(k, t), hit)
+                for k, (qx, qy) in enumerate(CORNERS):
+                    cx_, cy_, a0 = self.arc_geom(k, t)
+                    arc_hit(P, V, n, r, cx_, cy_, a0, self.omega(k, t), hit, qx, qy, ARC_R)
+                # gequetscht = vom Bogen gedrückt UND an der Wand des Vierecks
+                wallnear = ((P[:n, 0] < X0 + r + 2.5) | (P[:n, 0] > X1 - r - 2.5) |
+                            (P[:n, 1] < Y0 + r + 2.5) | (P[:n, 1] > Y1 - r - 2.5))
+                hit[:n] &= wallnear.astype(np.int64)
                 for _ in range(2):
                     collide(P, V, n, r, cell, head, nxt, gw, gh, x0, y0)
                     box_walls(P, V, n, r)
@@ -192,7 +207,7 @@ class ArcBox:
                         n += 1
                 t += dt
             self.frames.append((P[:n].astype(np.float32).copy(), gen[:n].astype(np.int8).copy(),
-                                [self.arc_angle(k, t) for k in range(4)]))
+                                [self.arc_geom(k, t) for k in range(4)]))
             if self.full_t is None and n >= self.N_FULL:
                 self.full_t = t
             if self.full_t is not None and t > self.full_t + self.OUTRO:
@@ -255,7 +270,7 @@ class ArcRenderer:
 
     def arcs(self, d, angs):
         k = SS
-        for (px, py), a in zip(CORNERS, angs):
+        for (px, py, a) in angs:
             bb = [(px - ARC_R) * k, (py - ARC_R) * k, (px + ARC_R) * k, (py + ARC_R) * k]
             a0, a1 = math.degrees(a), math.degrees(a + SPAN)
             d.arc(bb, a0, a1, fill=GOLD_D + (255,), width=int((ARC_W + 2) * k))
@@ -288,7 +303,7 @@ class ArcRenderer:
         d = ImageDraw.Draw(out, "RGBA")
         last = [s for s in self.splits if s <= t]
         pop = 1 + 0.12 * max(0.0, 1 - (t - last[-1]) / 0.15) if last else 1.0
-        d.text((CX, Y1 + 0.68 * HALF + 34), f"{len(Pn):,}", font=_font(F_BOLD, int(54 * pop)), fill=(255, 255, 255, 235),
+        d.text((CX, Y1 + 120), f"{len(Pn):,}", font=_font(F_BOLD, int(54 * pop)), fill=(255, 255, 255, 235),
                anchor="mm")
         return out
 
@@ -377,5 +392,5 @@ if __name__ == "__main__":
         out.save("output/preview/arcbox_check.png")
         tiktok_ui_mock(ims[3], "vertical").save("output/preview/arcbox_ui.png")
     else:
-        render(sim, "output/a01_arc_box_vertical.mp4")
-        print("output/a01_arc_box_vertical.mp4")
+        render(sim, "output/a02_arc_squeeze_vertical.mp4")
+        print("output/a02_arc_squeeze_vertical.mp4")

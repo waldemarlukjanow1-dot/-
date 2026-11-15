@@ -178,7 +178,7 @@ class PressRenderer:
                fill=LAV_HI + (255,), width=5 * k, joint="curve")
         self.anvil_lay = Image.new("RGBA", lay.size, (0, 0, 0, 0))
         self.anvil_lay.paste(lay, (0, 0), Image.composite(lay.getchannel("A"), Image.new("L", lay.size, 0), m))
-        self.splits = [e for e in sc.events if e[1] == "split"]
+        self.splits = [e for e in sc.events if e[1] == "split"]  # nur Teilungen
         self.split_t = [e[0] for e in self.splits]
 
     def press(self, d, y):

@@ -222,8 +222,7 @@ class PressRenderer:
         for t0, _, dd in self.splits[lo:hi][-60:]:
             e = (t - t0) / 0.35
             x, y = dd["x"] * k, dd["y"] * k
-            R = (6 + 20 * e) * k
-            d.ellipse([x - R, y - R, x + R, y + R], outline=(255, 255, 255, int(200 * (1 - e))), width=2 * k)
+            pass   # keine Ring-Effekte mehr (Wunsch)
         out = im.convert("RGB").reduce(SS)
         arr = np.asarray(out, np.float32)
         g = out.resize((W1 // 6, H1 // 6), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4)).resize((W1, H1))
@@ -264,9 +263,7 @@ def build_audio(sc, path):
 
     last = -1.0
     for t, kind, d in sc.events:
-        if kind == "full":
-            for j, f in enumerate((300, 400, 520)):
-                put(t + j * 0.08, plop(f, big=True), 0.7)
+        if kind == "full":   # kein Schluss-Sound (Wunsch)
             continue
         if t - last < 0.05:
             continue

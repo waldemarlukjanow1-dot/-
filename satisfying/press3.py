@@ -13,7 +13,7 @@ from . import press2 as P2
 
 PAD_HW = 150.0                      # halbe Breite des Katapult-Kolbens
 PAD_REST = CY + R_AR - 62           # Oberkante in Ruhe
-PAD_LIFT = 95.0
+PAD_LIFT = 118.0
 JAW_Y0, JAW_Y1 = CY - R_AR - 10, CY - 230  # Pressbacken ganz oben am Rand
 GAP_OPEN, GAP_SHUT = 420.0, 14.0
 
@@ -23,7 +23,7 @@ class CatapultPress(Scene):
     CAP = 3000
     DUR = 80.0
     SUB = 8
-    BEAT = 1.35
+    BEAT = 1.9
     GAP = 1.0                        # jeder Ball höchstens einmal pro Pressvorgang
     N_FULL = 2850
     OUTRO = 4.0
@@ -96,6 +96,7 @@ class CatapultPress(Scene):
         return np.array([(CX - PAD_HW, y), (CX + PAD_HW, y), (CX + PAD_HW, y + 420), (CX - PAD_HW, y + 420)],
                         np.float64)
 
+    SCRIPTED_LAUNCH = False
     CUP = 2000.0                     # die ganze Säule über dem Kolben wird geschleudert
 
     def launch(self, P, V, n, t):
@@ -115,7 +116,8 @@ class CatapultPress(Scene):
             self.events.append((t, "launch", {"n": int(len(idx))}))
 
     def machine(self, P, V, n, t, touch, impact):
-        self.launch(P, V, n, t)
+        if self.SCRIPTED_LAUNCH:   # alt: Geschwindigkeit wurde gesetzt – jetzt rein physikalisch über den Kolben
+            self.launch(P, V, n, t)
         poly_body(P, V, n, self.R, self.pad(self.pad_y(t)), 0.0, self.vel(self.pad_y, t), 0.0, 0.0, 0.0, 0.05,
                   touch, 2, impact, 1e9)
         for q in self.slopes:
@@ -229,8 +231,7 @@ class CatapultRenderer(P2.PressRenderer):
         for t0, _, dd in self.splits[lo:hi][-60:]:
             e = (t - t0) / 0.35
             x, y = dd["x"] * k, dd["y"] * k
-            R = (6 + 20 * e) * k
-            d.ellipse([x - R, y - R, x + R, y + R], outline=(255, 255, 255, int(200 * (1 - e))), width=2 * k)
+            pass   # keine Ring-Effekte mehr (Wunsch)
         out = im.convert("RGB").reduce(SS)
         arr = np.asarray(out, np.float32)
         g = out.resize((W1 // 6, H1 // 6), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4)).resize((W1, H1))
@@ -270,9 +271,7 @@ def build_audio(sc, path):
 
     last = -1.0
     for t, kind, d in sc.events:
-        if kind == "full":
-            for j, f in enumerate((300, 400, 520)):
-                put(t + j * 0.08, plop(f, big=True), 0.7)
+        if kind == "full":   # kein Schluss-Sound (Wunsch)
             continue
         if kind != "split":
             continue

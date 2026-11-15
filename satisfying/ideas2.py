@@ -203,6 +203,66 @@ class Weight(Base):
         return (self.wy(t),)
 
 
+class WeightLong(Weight):
+    """Lange Version: das Gewicht fällt immer wieder. Zerquetscht wird jeder Ball direkt unter dem Gewicht, der
+    nach unten nicht ausweichen kann (Bodenplatte oder andere Bälle darunter). Am Ende ist der Kreis bis zum Rand voll,
+    das Gewicht wird hochgezogen und bleibt oben."""
+    DUR = 80.0
+    CAP = 3200
+    TOP = CY - R_AR + 40
+    LIFT_T, HOLD_T = 0.6, 0.08
+    N_FULL = 2400
+    OUTRO = 4.0
+
+    def __init__(self, seed, n0=8):
+        super().__init__(seed, n0)
+        self.GAP = self.cycle * 0.9      # jeder Ball höchstens einmal pro Fall
+        self.full_t = None
+
+    def wy(self, t):
+        if self.full_t is not None and t >= self.full_t:
+            e = min(1.0, (t - self.full_t) / 1.2)
+            return self._y_full + (self.TOP - self._y_full) * e * e * (3 - 2 * e)
+        return Weight.wy(self, t)
+
+    def crushed(self, P, V, n, t, touch, impact):
+        if self.full_t is not None:
+            return np.zeros(0, np.int64)
+        e = 1e-3
+        vy = (self.wy(t + e) - self.wy(t - e)) / (2 * e)
+        if vy < 200 and self.wy(t) < self.low - 1.2 * self.R:
+            return np.zeros(0, np.int64)        # nur während das Gewicht fällt bzw. aufschlägt
+        y = self.wy(t)
+        under = ((touch[:n] & 1) == 1) & (np.abs(P[:n, 0] - CX) < self.WW / 2) & (P[:n, 1] > y)
+        out = []
+        for i in np.nonzero(under)[0]:
+            if touch[i] & 2:
+                out.append(i)
+                continue
+            dx, dy = P[:n, 0] - P[i, 0], P[:n, 1] - P[i, 1]
+            if np.any((dy > self.R * 0.8) & (dy < self.R * 2.3) & (np.abs(dx) < self.R * 1.6)):
+                out.append(i)
+        return np.array(out, np.int64)
+
+    def eject(self, P, V, i, j, t):
+        if P[i, 1] > self.FLOOR - 2 * self.R:   # unterste Reihe: kein Platz -> seitlich am Gewicht heraus
+            Weight.eject(self, P, V, i, j, t)
+        else:
+            Base.eject(self, P, V, i, j, t)
+
+    def frame_hook(self, P, n, t):
+        top = int(np.sum(P[:n, 1] < CY - R_AR + 45))
+        if top >= 8:
+            self._top_since = getattr(self, "_top_since", None) or t
+        else:
+            self._top_since = None
+        if self.full_t is None and (n >= self.N_FULL or (self._top_since and t - self._top_since > 1.5)):
+            self._y_full = self.wy(t)
+            self.full_t = t
+            self.events.append((t, "full", {}))
+        return self.full_t is not None and t > self.full_t + self.OUTRO
+
+
 # ------------------------------------------------------------------ Darstellung
 
 RING_A, RING_B = (255, 90, 190), (90, 200, 255)
@@ -305,6 +365,15 @@ class Renderer:
         arr = np.asarray(out, np.float32)
         g = out.resize((W1 // 6, H1 // 6), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4)).resize((W1, H1))
         arr = arr + np.clip(np.asarray(g, np.float32) - 50, 0, 255) * 0.35
+        ft = getattr(sc, "full_t", None)
+        if ft is not None and t > ft:     # Kreis voll: Ring leuchtet sanft auf (ohne Ton)
+            e = t - ft
+            a = min(1.0, e / 0.8) * (0.7 + 0.3 * math.cos(e * 3.0))
+            fl = Image.new("L", (W1, H1), 0)
+            ImageDraw.Draw(fl).ellipse([CX - R_AR - 12, CY - R_AR - 12, CX + R_AR + 12, CY + R_AR + 12], outline=255,
+                                       width=24)
+            fl = np.asarray(fl.filter(ImageFilter.GaussianBlur(14)), np.float32)[..., None] / 255
+            arr = arr + fl * np.array((255, 225, 140)) * a * 1.2
         out = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
         d = ImageDraw.Draw(out, "RGBA")
         last = [s for s in self.splits if s <= t]
@@ -342,7 +411,8 @@ def build_audio(sc, path):
             q += sc.T / 2
     elif isinstance(sc, Weight):           # Gewicht schlägt auf
         q = sc.LIFT_T + sc.HOLD_T + sc.fall_T
-        while q < dur:
+        end = getattr(sc, "full_t", None) or dur
+        while q < end:
             put(q, plop(140, big=True), 0.4)
             q += sc.cycle
     out = out[:n]
@@ -395,7 +465,8 @@ def render(sc, out_path, jobs=4):
 
 IDEAS = {"n01_pendulum_hammer": lambda: Pendulum(1, n0=10),
          "n02_spinning_drum": lambda: Drum(1, n0=10),
-         "n03_drop_weight": lambda: Weight(1, n0=8)}
+         "n03_drop_weight": lambda: Weight(1, n0=8),
+         "n04_drop_weight_long": lambda: WeightLong(1, n0=8)}
 
 if __name__ == "__main__":
     import sys

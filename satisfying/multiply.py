@@ -220,6 +220,8 @@ class Scene:
                     n += 1
                 t += dt
             self.frames.append((P[:n].astype(np.float32).copy(), self.state(t)))
+            if hasattr(self, "frame_hook") and self.frame_hook(P, n, t):
+                break
         self.n_frames = len(self.frames)
         return self
 
@@ -518,8 +520,20 @@ class MultiplyRenderer:
             e = min(1.0, (t - sc.STOP - 1.2) / 0.5)
             col = GOLD
             pop = 1 + 0.35 * e
-        d.text((CX, CY + R_AR + 74), f"{n:,}", font=_font(F_BOLD, int(54 * pop)), fill=col + (240,),
-               anchor="mm")
+        if getattr(sc, "COUNTER", True):
+            d.text((CX, CY + R_AR + 74), f"{n:,}", font=_font(F_BOLD, int(54 * pop)), fill=col + (240,),
+                   anchor="mm")
+        ft = getattr(sc, "full_t", None)
+        if ft is not None and t > ft:   # Ziel erreicht: Ring leuchtet golden auf und pulsiert sanft
+            e = t - ft
+            a = min(1.0, e / 0.6) * (0.75 + 0.25 * math.cos(e * 4.0))
+            fl = Image.new("RGBA", out.size, (0, 0, 0, 0))
+            ImageDraw.Draw(fl).ellipse([CX - R_AR - 13, CY - R_AR - 13, CX + R_AR + 13, CY + R_AR + 13],
+                                       outline=GOLD + (255,), width=22)
+            fl = fl.filter(ImageFilter.GaussianBlur(12))
+            a_ = np.asarray(fl, np.float32)
+            arr = np.asarray(out, np.float32) + a_[..., :3] * (a_[..., 3:] / 255) * a * 1.3
+            out = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
         return out
 
 
@@ -533,7 +547,15 @@ def build_audio(sc, path):
         if t - last < 0.05:
             continue
         last = t
+        if kind == "full":
+            for j, f in enumerate((520, 660, 820)):
+                s_ = plop(f, big=True)
+                i = int((t + j * 0.12) * SR)
+                out[i:i + len(s_)] += s_[: max(0, len(out) - i)][: len(out[i:i + len(s_)])] * 0.8
+            continue
         f = 420 + 380 * min(1.0, math.log10(max(1, d["n"])) / 3.0)
+        if isinstance(sc, PressFill):
+            f *= 1.15                      # etwas heller
         s = plop(round(f / 20) * 20)
         i = int(t * SR)
         e = min(len(out), i + len(s))
@@ -637,10 +659,108 @@ class PistonLong(Piston):
         return Piston.crushed(self, P, V, n, t, touch, impact)
 
 
+class PressFill(Piston):
+    """Saubere Presse: flache Bodenplatte über die ganze Breite, breiter Stempel fährt langsam herab.
+    Nur Bälle, die zwischen Stempel und Platte eingeklemmt werden, verdoppeln sich – bis der Kreis voll ist."""
+    R = 11.0
+    CAP = 2600
+    DUR = 70.0
+    FLOOR = CY + 250
+    PW = 620.0
+    BEAT = 0.75
+    GAP = 0.0
+    TOP_Y = CY - R_AR + 115          # Unterkante des Stempels in Ruhe (oben sichtbar)
+    FULL_Y = CY - R_AR + 150         # Kreis gilt als voll, wenn der Haufen bis hier reicht
+    OUTRO = 4.0
+    COUNTER = False
+    N_FULL = 2050
+
+    def __init__(self, seed, n0=2):
+        Scene.__init__(self, seed, n0)
+        hw = math.sqrt(R_AR ** 2 - (self.FLOOR - CY) ** 2) + 40
+        self.floor = np.array([(CX - hw - 60, self.FLOOR), (CX + hw + 60, self.FLOOR), (CX + hw + 60, self.FLOOR + 300),
+                               (CX - hw - 60, self.FLOOR + 300)], np.float64)
+        self.slopes = []
+        self.full_t = None
+
+    def piston_y(self, t):
+        """Oben warten, langsam (beschleunigend) herab, kurz pressen, ruhig wieder hoch."""
+        top, low = self.TOP_Y, self.FLOOR - 2 * self.R * 0.6
+        if self.full_t is not None and t >= self.full_t:
+            e = min(1.0, (t - self.full_t) / 0.8)
+            y0 = getattr(self, "_y_full", top)
+            return y0 + (top - y0) * (e * e * (3 - 2 * e))
+        u = (t / self.BEAT) % 1.0
+        if u < 0.25:
+            f = 0.0
+        elif u < 0.62:
+            v = (u - 0.25) / 0.37
+            f = v * v * (3 - 2 * v) * 0.5 + 0.5 * v * v      # sanft los, zum Ende zügiger
+        elif u < 0.72:
+            f = 1.0
+        else:
+            v = (u - 0.72) / 0.28
+            f = 1 - v * v * (3 - 2 * v)
+        return top + (low - top) * f
+
+    def crushed(self, P, V, n, t, touch, impact):
+        if self.full_t is not None or self.piston_y(t) < self.FLOOR - 3.2 * self.R:
+            return np.zeros(0, np.int64)
+        m = ((touch[:n] & 1) == 1) & ((touch[:n] & 2) == 2)    # zwischen Stempel UND Bodenplatte
+        m &= P[:n, 1] > self.FLOOR - self.R * 1.6               # liegt wirklich auf der Platte
+        m &= np.abs(P[:n, 0] - CX) < self.PW / 2
+        idx = np.nonzero(m)[0]
+        stroke = int(t / self.BEAT)
+        if len(idx) == 0 or stroke == getattr(self, "_stroke", -1):
+            return np.zeros(0, np.int64)
+        self._stroke = stroke   # ein Pressvorgang: die ganze eingeklemmte Reihe platzt auf einmal
+        idx = idx[np.argsort(P[idx, 0])]
+        row, lastx = [], -1e9
+        for i in idx:
+            if P[i, 0] - lastx >= self.R * 1.5:
+                row.append(i)
+                lastx = P[i, 0]
+        return np.array(row, np.int64)
+
+    def eject(self, P, V, i, j, t):
+        """Der zerdrückte Ball wird zu zwei: je einer quillt links und rechts unter dem Stempel heraus."""
+        rng = self.rng
+        side = 1 if P[i, 0] > CX else -1
+        for k, s in ((i, side), (j, -side)):
+            a = -math.pi / 2 + s * rng.uniform(0.55, 1.0)
+            sp = rng.uniform(520, 760)
+            V[k] = (math.cos(a) * sp, math.sin(a) * sp)
+            P[k, 0] = CX + s * (self.PW / 2 + self.R + 1 + rng.uniform(0, 6))
+            P[k, 1] = self.FLOOR - self.R - 1 - rng.uniform(0, 4)
+
+    def start(self, P, V):
+        for k in range(self.n0):
+            P[k] = (CX - 40 + 80 * k, self.FLOOR - 120 - 40 * k)
+            V[k] = (self.rng.uniform(-40, 40), 0)
+
+    def run(self):
+        self._check_t = 0.0
+        return Scene.run(self)
+
+    def state(self, t):
+        return (self.piston_y(t),)
+
+    def frame_hook(self, P, n, t):
+        """Nach jedem Bild: Ist der Kreis voll? Dann Stempel hoch, Ende."""
+        if self.full_t is None and n > 200:
+            if n >= self.N_FULL:
+                self._y_full = self.piston_y(t)
+                self.full_t = t
+                self.events.append((t, "full", {}))
+        return self.full_t is not None and t > self.full_t + self.OUTRO
+
+
 SCENES = {"m01_crusher_rollers": lambda: Rollers(1, n0=3),
           "m02_spinning_blade": lambda: Blade(2, n0=3),
           "m03_piston_press": lambda: Piston(3, n0=5),
-          "m04_piston_press_long": lambda: PistonLong(SEED_LONG, n0=3)}
+          "m04_piston_press_long": lambda: PistonLong(SEED_LONG, n0=3),
+          "m05_press_fill": lambda: PressFill(SEED_FILL, n0=2)}
+SEED_FILL = 1
 SEED_LONG = 1
 
 if __name__ == "__main__":

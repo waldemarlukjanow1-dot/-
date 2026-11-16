@@ -33,8 +33,8 @@ ARC_R = ARC_D / 2
 SIDE = (1, 1, 1, 1)                               # Wölbungsrichtung je Ecke
 ARC_W = 16.0                                      # Dicke der Bögen
 SPAN = math.pi                                    # Halbkreis
-GEN_COLS = [(90, 255, 110), (255, 50, 120), (225, 40, 255), (40, 110, 255), (255, 210, 40), (0, 230, 255),
-            (255, 120, 30), (180, 90, 255)]
+GEN_COLS = [(57, 255, 20), (255, 20, 147), (190, 20, 255), (0, 120, 255), (255, 240, 0), (0, 255, 255),
+            (255, 90, 0), (255, 0, 70)]
 
 
 @njit(cache=True)
@@ -109,14 +109,14 @@ def keep_speed(V, n, sp):
 
 
 class ArcBox:
-    R = 11.0
-    CAP = 2600
+    R = 14.0
+    CAP = 1300
     SUB = 6
     SPEED = 480.0
     GAP = 0.35                     # ein Ball kann sich höchstens alle 0,35 s teilen
     OMS = (1.9, -1.6, 2.1, -1.75)   # Drehgeschwindigkeit der vier Bögen (rad/s), abwechselnde Richtung
     PH = (0.3, 2.0, 4.0, 5.3)
-    N_FULL = 1500
+    N_FULL = 920
     DUR = 70.0
     OUTRO = 3.5
 
@@ -230,10 +230,10 @@ def ball_sprites(r):
         yy, xx = np.mgrid[0:n, 0:n].astype(np.float32) - n / 2 + 0.5
         d = np.hypot(xx, yy)
         core = np.clip(r - d + 0.7, 0, 1)
-        glow = np.clip(1 - d / (r * 2.3), 0, 1) ** 2.2 * 0.5
+        glow = np.clip(1 - d / (r * 2.9), 0, 1) ** 2.0 * 0.85
         c = np.array(col, np.float32)
         light = np.clip(1.0 - ((xx + r * 0.35) ** 2 + (yy + r * 0.45) ** 2) / (2.2 * r * r), 0, 1)
-        rgb = c * (0.6 + 0.55 * light[..., None])
+        rgb = c * (0.82 + 0.35 * light[..., None])
         hard = np.exp(-(((xx + r * 0.36) / (r * 0.2)) ** 2 + ((yy + r * 0.42) / (r * 0.16)) ** 2))
         rgb = rgb + hard[..., None] * (255 - rgb) * 0.9
         gl = np.zeros_like(rgb)
@@ -266,6 +266,11 @@ class ArcRenderer:
         base = base * (1 - band[..., None]) + (col * 0.5 + 255 * 0.5) * band[..., None] + col * glow[..., None] * 0.7
         self.base = Image.fromarray(base.clip(0, 255).astype(np.uint8)).convert("RGBA")
         self.sprites = ball_sprites(sim.R * k)
+        self.ghost = []
+        for sp in self.sprites:   # zarte Kopie für die Bewegungsunschärfe
+            a = np.asarray(sp).copy()
+            a[..., 3] = (a[..., 3] * 0.28).astype(np.uint8)
+            self.ghost.append(Image.fromarray(a, "RGBA"))
         self.splits = [e[0] for e in sim.events]
 
     def arcs(self, d, angs):
@@ -290,6 +295,13 @@ class ArcRenderer:
         t = (fi + 1) / FPS
         Pn, gens, angs = sim.frames[fi]
         im = self.base.copy()
+        prev = sim.frames[fi - 1][0] if fi > 0 else Pn
+        m = min(len(prev), len(Pn))
+        for f, sprs in ((0.33, self.ghost), (0.66, self.ghost)):
+            Q = prev[:m] + (Pn[:m] - prev[:m]) * f
+            for (x, y), g in zip(Q, gens[:m]):
+                sp = sprs[int(g) % len(sprs)]
+                im.alpha_composite(sp, (int(x * k - sp.width / 2), int(y * k - sp.height / 2)))
         for (x, y), g in zip(Pn, gens):
             sp = self.sprites[int(g) % len(self.sprites)]
             im.alpha_composite(sp, (int(x * k - sp.width / 2), int(y * k - sp.height / 2)))
@@ -345,7 +357,7 @@ _R = None
 def _chunk(args):
     i0, i1, out = args
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W1}x{H1}", "-r", str(FPS),
-           "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-maxrate", "14M", "-bufsize", "28M",
+           "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "16", "-maxrate", "24M", "-bufsize", "48M",
            "-pix_fmt", "yuv420p", "-g", "120", out]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     for i in range(i0, i1):
@@ -392,5 +404,5 @@ if __name__ == "__main__":
         out.save("output/preview/arcbox_check.png")
         tiktok_ui_mock(ims[3], "vertical").save("output/preview/arcbox_ui.png")
     else:
-        render(sim, "output/a02_arc_squeeze_vertical.mp4")
-        print("output/a02_arc_squeeze_vertical.mp4")
+        render(sim, "output/a03_arc_squeeze_neon_vertical.mp4")
+        print("output/a03_arc_squeeze_neon_vertical.mp4")

@@ -15,3 +15,5 @@
   Glossy-Bälle mit Rand + Schatten, Glow nimmt mit Ballzahl ab, Regenbogen-Farben je Generation, Bogen-Schweif,
   Bogen leuchtet beim Quetschen kurz auf, Squash beim Teilen, Mikro-Zoom bei 100/250/500, Ende: Bögen blenden aus,
   Rahmen leuchtet einmal auf.
+- **Loop (a06):** alle Halbkreise drehen gleichzeitig im Uhrzeigersinn mit gleicher Geschwindigkeit; Video endet
+  nahtlos im Startbild (Kaskade bis 1 Ball, letzter Ball fliegt mit normalem Tempo in die Startposition).

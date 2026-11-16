@@ -9,3 +9,5 @@
 - **Arc Box (Vorbild "The Bouncing Ball"):** Jeder Halbkreis hängt mit EINEM Ende an einer Ecke des Vierecks und
   dreht sich um diese Ecke. Der Halbkreis quetscht die Bälle an die Wand des Vierecks – nur so eingeklemmte Bälle
   verdoppeln sich (pro Ball), die zwei bekommen die nächste Farbe.
+- **Arc Box ab a04:** alle Halbkreise drehen im Uhrzeigersinn, neon-grün mit Textur; Ton nur beim Quetschen an
+  der Wand (Plopp pro verdoppeltem Ball), 60 fps mit leichter Bewegungsunschärfe, große kräftige Neon-Bälle.

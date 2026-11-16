@@ -114,7 +114,7 @@ class ArcBox:
     SUB = 6
     SPEED = 480.0
     GAP = 0.35                     # ein Ball kann sich höchstens alle 0,35 s teilen
-    OMS = (1.9, -1.6, 2.1, -1.75)   # Drehgeschwindigkeit der vier Bögen (rad/s), abwechselnde Richtung
+    OMS = (1.9, 1.6, 2.1, 1.75)     # alle im Uhrzeigersinn (rad/s)
     PH = (0.3, 2.0, 4.0, 5.3)
     N_FULL = 920
     DUR = 70.0
@@ -219,6 +219,7 @@ class ArcBox:
 # ------------------------------------------------------------------ Darstellung
 
 RING_A, RING_B = (255, 90, 190), (90, 200, 255)
+NEON, NEON_HI, NEON_D, NEON_DD = (57, 255, 60), (210, 255, 200), (10, 150, 40), (5, 70, 20)
 GOLD, GOLD_HI, GOLD_D = (255, 214, 120), (255, 240, 200), (215, 160, 70)
 LAV, LAV_HI = (178, 168, 235), (225, 220, 255)
 
@@ -274,18 +275,27 @@ class ArcRenderer:
         self.splits = [e[0] for e in sim.events]
 
     def arcs(self, d, angs):
+        """Neon-grüne Halbkreise mit Textur: dunkler Rand, heller Kern, Glanzlinie und Rillen quer zum Bogen."""
         k = SS
         for (px, py, a) in angs:
-            bb = [(px - ARC_R) * k, (py - ARC_R) * k, (px + ARC_R) * k, (py + ARC_R) * k]
+            def bb(dr):
+                return [(px - ARC_R - dr) * k, (py - ARC_R - dr) * k, (px + ARC_R + dr) * k, (py + ARC_R + dr) * k]
             a0, a1 = math.degrees(a), math.degrees(a + SPAN)
-            d.arc(bb, a0, a1, fill=GOLD_D + (255,), width=int((ARC_W + 2) * k))
-            d.arc(bb, a0, a1, fill=GOLD + (255,), width=int(ARC_W * k))
-            bi = [(px - ARC_R + 4) * k, (py - ARC_R + 4) * k, (px + ARC_R - 4) * k, (py + ARC_R - 4) * k]
-            d.arc(bi, a0 + 1, a1 - 1, fill=GOLD_HI + (255,), width=int(3 * k))
+            d.arc(bb(0), a0, a1, fill=NEON_D + (255,), width=int((ARC_W + 4) * k))
+            d.arc(bb(0), a0, a1, fill=NEON + (255,), width=int(ARC_W * k))
+            d.arc(bb(-3), a0 + 0.5, a1 - 0.5, fill=NEON_HI + (255,), width=int(4 * k))     # Glanz innen
+            d.arc(bb(5), a0 + 0.5, a1 - 0.5, fill=NEON_DD + (255,), width=int(2 * k))      # Schatten außen
+            for q in range(1, 18):                     # Rillen quer zum Bogen
+                e = a + SPAN * q / 18
+                c, s_ = math.cos(e), math.sin(e)
+                r0, r1 = ARC_R - ARC_W / 2 + 2, ARC_R + ARC_W / 2 - 2
+                d.line([((px + c * r0) * k, (py + s_ * r0) * k), ((px + c * r1) * k, (py + s_ * r1) * k)],
+                       fill=NEON_D + (200,), width=int(2 * k))
             for e in (a, a + SPAN):                    # runde Enden
                 ex, ey = px + math.cos(e) * ARC_R, py + math.sin(e) * ARC_R
-                rr = ARC_W / 2
-                d.ellipse([(ex - rr) * k, (ey - rr) * k, (ex + rr) * k, (ey + rr) * k], fill=GOLD + (255,))
+                rr = ARC_W / 2 + 1
+                d.ellipse([(ex - rr) * k, (ey - rr) * k, (ex + rr) * k, (ey + rr) * k], fill=NEON + (255,),
+                          outline=NEON_D + (255,), width=k)
         for px, py in CORNERS:                         # Gelenkpunkte
             d.ellipse([(px - 15) * k, (py - 15) * k, (px + 15) * k, (py + 15) * k], fill=LAV + (255,))
             d.ellipse([(px - 6) * k, (py - 6) * k, (px + 6) * k, (py + 6) * k], fill=(40, 30, 70, 255))
@@ -305,8 +315,11 @@ class ArcRenderer:
         for (x, y), g in zip(Pn, gens):
             sp = self.sprites[int(g) % len(self.sprites)]
             im.alpha_composite(sp, (int(x * k - sp.width / 2), int(y * k - sp.height / 2)))
-        d = ImageDraw.Draw(im, "RGBA")
-        self.arcs(d, angs)
+        glow = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        self.arcs(ImageDraw.Draw(glow, "RGBA"), angs)
+        g2 = glow.resize((W1 // 4, H1 // 4), Image.BILINEAR).filter(ImageFilter.GaussianBlur(5)).resize(im.size)
+        im.alpha_composite(g2)
+        im.alpha_composite(glow)
         out = im.convert("RGB").reduce(SS)
         arr = np.asarray(out, np.float32)
         g = out.resize((W1 // 6, H1 // 6), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4)).resize((W1, H1))
@@ -404,5 +417,5 @@ if __name__ == "__main__":
         out.save("output/preview/arcbox_check.png")
         tiktok_ui_mock(ims[3], "vertical").save("output/preview/arcbox_ui.png")
     else:
-        render(sim, "output/a03_arc_squeeze_neon_vertical.mp4")
-        print("output/a03_arc_squeeze_neon_vertical.mp4")
+        render(sim, "output/a04_arc_squeeze_green_vertical.mp4")
+        print("output/a04_arc_squeeze_green_vertical.mp4")

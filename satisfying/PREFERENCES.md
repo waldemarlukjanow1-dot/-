@@ -17,3 +17,6 @@
   Rahmen leuchtet einmal auf.
 - **Loop (a06):** alle Halbkreise drehen gleichzeitig im Uhrzeigersinn mit gleicher Geschwindigkeit; Video endet
   nahtlos im Startbild (Kaskade bis 1 Ball, letzter Ball fliegt mit normalem Tempo in die Startposition).
+- **Viral-Kurzversion (a07, `arcbox3.py`):** ~18 s Loop, 4 Start-Bälle (rot), erste Quetschung < 1 s,
+  größeres Viereck weiter oben, Plopp-Tonhöhe steigt mit Ballzahl (Melodie), leises Summen der Bögen,
+  kurze leuchtende Spur hinter den Bällen.

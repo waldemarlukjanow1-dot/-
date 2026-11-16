@@ -24,8 +24,8 @@ from .multiply import collide, _font, F_BOLD
 FPS = 60
 W1, H1, SS = 1080, 1920, 2
 SR = 44100
-CX, CY = 520.0, 870.0
-HALF = 340.0                                      # halbe Kantenlänge des Rahmens
+CX, CY = 520.0, 830.0
+HALF = 375.0                                      # halbe Kantenlänge des Rahmens
 X0, X1, Y0, Y1 = CX - HALF, CX + HALF, CY - HALF, CY + HALF
 CORNERS = [(X0, Y0), (X1, Y0), (X1, Y1), (X0, Y1)]
 ARC_D = 1.25 * HALF                               # Durchmesser der Halbkreise

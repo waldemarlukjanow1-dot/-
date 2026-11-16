@@ -55,7 +55,7 @@ def box_walls(P, V, n, r):
 
 
 @njit(cache=True)
-def arc_hit(P, V, n, r, px, py, a0, om, hit, qx0, qy0, ARC_R):
+def arc_hit(P, V, n, r, px, py, a0, om, hit, qx0, qy0, ARC_R, val=1):
     """Ball gegen Halbkreis-Bogen mit Mittelpunkt (px,py), Radius ARC_R, Bogen von a0 bis a0+SPAN.
     Der Bogen dreht sich um den Gelenkpunkt (qx0,qy0) mit Winkelgeschwindigkeit om."""
     for i in range(n):
@@ -95,7 +95,7 @@ def arc_hit(P, V, n, r, px, py, a0, om, hit, qx0, qy0, ARC_R):
                 rvx -= 2 * vn * nx
                 rvy -= 2 * vn * ny
                 V[i, 0], V[i, 1] = rvx + sx, rvy + sy
-            hit[i] = 1
+            hit[i] = val
 
 
 @njit(cache=True)
@@ -158,6 +158,9 @@ class ArcBox:
         P, V = np.zeros((N, 2)), np.zeros((N, 2))
         gen = np.zeros(N, np.int64)
         last = np.full(N, -9.0)
+        born = np.full(N, -9.0)          # Zeitpunkt der Teilung (für das Plattdrücken)
+        nang = np.zeros(N)               # Richtung der Wand-Normalen beim Quetschen
+        self.arc_squeeze = [[] for _ in range(4)]
         P[0] = (X1 - 60, Y1 - 120)
         a = math.radians(-35)
         V[0] = (math.cos(a) * self.SPEED, math.sin(a) * self.SPEED)
@@ -178,11 +181,11 @@ class ArcBox:
                 hit[:n] = 0
                 for k, (qx, qy) in enumerate(CORNERS):
                     cx_, cy_, a0 = self.arc_geom(k, t)
-                    arc_hit(P, V, n, r, cx_, cy_, a0, self.omega(k, t), hit, qx, qy, ARC_R)
+                    arc_hit(P, V, n, r, cx_, cy_, a0, self.omega(k, t), hit, qx, qy, ARC_R, k + 1)
                 # gequetscht = vom Bogen gedrückt UND an der Wand des Vierecks
                 wallnear = ((P[:n, 0] < X0 + r + 2.5) | (P[:n, 0] > X1 - r - 2.5) |
                             (P[:n, 1] < Y0 + r + 2.5) | (P[:n, 1] > Y1 - r - 2.5))
-                hit[:n] &= wallnear.astype(np.int64)
+                hit[:n] = np.where(wallnear, hit[:n], 0)
                 for _ in range(2):
                     collide(P, V, n, r, cell, head, nxt, gw, gh, x0, y0)
                     box_walls(P, V, n, r)
@@ -203,11 +206,18 @@ class ArcBox:
                         V[i] = (math.cos(ang - 0.25) * sp, math.sin(ang - 0.25) * sp)
                         gen[i] = gen[n] = g
                         last[i] = last[n] = t
+                        born[i] = born[n] = t
+                        # Normale der nächstgelegenen Wand
+                        dl, dr_, dt_, db = P[i, 0] - X0, X1 - P[i, 0], P[i, 1] - Y0, Y1 - P[i, 1]
+                        mn = min(dl, dr_, dt_, db)
+                        nang[i] = nang[n] = 0.0 if mn in (dl, dr_) else math.pi / 2
+                        self.arc_squeeze[int(hit[i]) - 1].append(t)
                         self.events.append((t, "split", {"n": n + 1, "gen": int(g)}))
                         n += 1
                 t += dt
             self.frames.append((P[:n].astype(np.float32).copy(), gen[:n].astype(np.int8).copy(),
-                                [self.arc_geom(k, t) for k in range(4)]))
+                                [self.arc_geom(k, t) for k in range(4)], born[:n].astype(np.float32).copy(),
+                                nang[:n].astype(np.float32).copy()))
             if self.full_t is None and n >= self.N_FULL:
                 self.full_t = t
             if self.full_t is not None and t > self.full_t + self.OUTRO:
@@ -303,7 +313,7 @@ class ArcRenderer:
     def frame(self, fi):
         sim, k = self.sim, SS
         t = (fi + 1) / FPS
-        Pn, gens, angs = sim.frames[fi]
+        Pn, gens, angs = sim.frames[fi][:3]
         im = self.base.copy()
         prev = sim.frames[fi - 1][0] if fi > 0 else Pn
         m = min(len(prev), len(Pn))

@@ -11,3 +11,7 @@
   verdoppeln sich (pro Ball), die zwei bekommen die nächste Farbe.
 - **Arc Box ab a04:** alle Halbkreise drehen im Uhrzeigersinn, neon-grün mit Textur; Ton nur beim Quetschen an
   der Wand (Plopp pro verdoppeltem Ball), 60 fps mit leichter Bewegungsunschärfe, große kräftige Neon-Bälle.
+- **Arc Squeeze optimiert (a05, `arcbox2.py`):** fast schwarzer Hintergrund, schlichter weiß-grüner Rahmen,
+  Glossy-Bälle mit Rand + Schatten, Glow nimmt mit Ballzahl ab, Regenbogen-Farben je Generation, Bogen-Schweif,
+  Bogen leuchtet beim Quetschen kurz auf, Squash beim Teilen, Mikro-Zoom bei 100/250/500, Ende: Bögen blenden aus,
+  Rahmen leuchtet einmal auf.

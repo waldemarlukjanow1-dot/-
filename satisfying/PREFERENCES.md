@@ -20,3 +20,5 @@
 - **Viral-Kurzversion (a07, `arcbox3.py`):** ~18 s Loop, 4 Start-Bälle (rot), erste Quetschung < 1 s,
   größeres Viereck weiter oben, Plopp-Tonhöhe steigt mit Ballzahl (Melodie), leises Summen der Bögen,
   kurze leuchtende Spur hinter den Bällen.
+- **Ab a10:** Länge 45–62 s, ruhiger aber nicht zu langer Start (2 Bälle, erste Quetschung ~1 s),
+  eigener Sound bei jeder Quetschung (assets/rizz.wav, max. ~3 pro Sekunde), jedes Video neue Farben.

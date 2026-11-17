@@ -22,3 +22,4 @@
   kurze leuchtende Spur hinter den Bällen.
 - **Ab a10:** Länge 45–62 s, ruhiger aber nicht zu langer Start (2 Bälle, erste Quetschung ~1 s),
   eigener Sound bei jeder Quetschung (assets/rizz.wav, max. ~3 pro Sekunde), jedes Video neue Farben.
+- Sound (Rizz-Sample) NUR bei Quetschungen – bei JEDER Quetschung, ohne Mindestabstand; Überschneiden ausdrücklich erwünscht (darf wie Chaos klingen). Keine weiteren Sounds.

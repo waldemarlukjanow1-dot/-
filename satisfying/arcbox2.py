@@ -19,6 +19,9 @@ from .arcbox import (CX, CY, X0, X1, Y0, Y1, HALF, ARC_R, ARC_W, SPAN, FPS, W1, 
 from .multiply import _font, F_BOLD
 from tiktok.render import tiktok_ui_mock
 
+THEME = dict(bg=(6, 6, 6), bg_glow=(10, 14, 12), frame=(225, 255, 235), frame_glow=(120, 255, 150),
+             pivot=(10, 30, 15), text=(235, 255, 240))
+
 RAINBOW = [(255, 40, 60), (255, 130, 0), (255, 230, 0), (60, 255, 70), (0, 150, 255), (150, 50, 255),
            (255, 40, 190), (0, 240, 255)]
 
@@ -54,15 +57,15 @@ class OptRenderer:
         self.sim = sim
         k = SS
         yy, xx = np.mgrid[0:H1 * k, 0:W1 * k].astype(np.float32) / k
-        base = np.full((H1 * k, W1 * k, 3), 6.0, np.float32)
-        base += np.exp(-(((xx - CX) / 520) ** 2 + ((yy - CY) / 520) ** 2))[..., None] * np.array((10, 14, 12))
+        base = np.zeros((H1 * k, W1 * k, 3), np.float32) + np.array(THEME['bg'], np.float32)
+        base += np.exp(-(((xx - CX) / 520) ** 2 + ((yy - CY) / 520) ** 2))[..., None] * np.array(THEME['bg_glow'])
         dist = np.minimum(np.minimum(np.abs(xx - X0), np.abs(xx - X1)), np.minimum(np.abs(yy - Y0), np.abs(yy - Y1)))
         on = (xx > X0 - 20) & (xx < X1 + 20) & (yy > Y0 - 20) & (yy < Y1 + 20)
         dist = np.where(on, dist, 999)
         band = np.clip(1 - dist / 3.0, 0, 1)
         glow = np.exp(-(dist / 14) ** 2) * 0.25
-        fr = np.array((225, 255, 235), np.float32)
-        base = base * (1 - band[..., None]) + fr * band[..., None] + np.array((120, 255, 150)) * glow[..., None] * 0.4
+        fr = np.array(THEME['frame'], np.float32)
+        base = base * (1 - band[..., None]) + fr * band[..., None] + np.array(THEME['frame_glow']) * glow[..., None] * 0.4
         self.base = Image.fromarray(base.clip(0, 255).astype(np.uint8)).convert("RGBA")
         self.frame_mask = Image.fromarray((band * 255).astype(np.uint8))
         self.sprites = {g: [sprite(sim.R * k, c, g) for c in RAINBOW] for g in self.GLOW_LEVELS}
@@ -163,8 +166,8 @@ class OptRenderer:
         im.alpha_composite(arcs)
         for px, py in A.CORNERS:
             d = ImageDraw.Draw(im, "RGBA")
-            d.ellipse([(px - 13) * k, (py - 13) * k, (px + 13) * k, (py + 13) * k], fill=(225, 255, 235, 255))
-            d.ellipse([(px - 5) * k, (py - 5) * k, (px + 5) * k, (py + 5) * k], fill=(10, 30, 15, 255))
+            d.ellipse([(px - 13) * k, (py - 13) * k, (px + 13) * k, (py + 13) * k], fill=THEME['frame'] + (255,))
+            d.ellipse([(px - 5) * k, (py - 5) * k, (px + 5) * k, (py + 5) * k], fill=THEME['pivot'] + (255,))
         out = im.convert("RGB").reduce(SS)
         arr = np.asarray(out, np.float32)
         gg = out.resize((W1 // 6, H1 // 6), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4)).resize((W1, H1))
@@ -191,7 +194,7 @@ class OptRenderer:
         d = ImageDraw.Draw(out, "RGBA")
         last = [s for s in self.splits if s <= t]
         pop = 1 + 0.12 * max(0.0, 1 - (t - last[-1]) / 0.15) if last else 1.0
-        d.text((CX, Y1 + 120), f"{n:,}", font=_font(F_BOLD, int(54 * pop)), fill=(235, 255, 240, 235), anchor="mm")
+        d.text((CX, Y1 + 120), f"{n:,}", font=_font(F_BOLD, int(54 * pop)), fill=THEME['text'] + (235,), anchor="mm")
         return out
 
 
@@ -439,8 +442,8 @@ class LoopRenderer(OptRenderer):
         im.alpha_composite(arcs)
         d = ImageDraw.Draw(im, "RGBA")
         for px, py in A.CORNERS:
-            d.ellipse([(px - 13) * k, (py - 13) * k, (px + 13) * k, (py + 13) * k], fill=(225, 255, 235, 255))
-            d.ellipse([(px - 5) * k, (py - 5) * k, (px + 5) * k, (py + 5) * k], fill=(10, 30, 15, 255))
+            d.ellipse([(px - 13) * k, (py - 13) * k, (px + 13) * k, (py + 13) * k], fill=THEME['frame'] + (255,))
+            d.ellipse([(px - 5) * k, (py - 5) * k, (px + 5) * k, (py + 5) * k], fill=THEME['pivot'] + (255,))
         out = im.convert("RGB").reduce(SS)
         arr = np.asarray(out, np.float32)
         gg = out.resize((W1 // 6, H1 // 6), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4)).resize((W1, H1))
@@ -457,7 +460,7 @@ class LoopRenderer(OptRenderer):
             ox, oy = int(CX * (1 + z) - CX), int(CY * (1 + z) - CY)
             out = big.crop((ox, oy, ox + W1, oy + H1))
         d = ImageDraw.Draw(out, "RGBA")
-        d.text((CX, Y1 + 120), f"{n_vis:,}", font=_font(F_BOLD, 54), fill=(235, 255, 240, 235), anchor="mm")
+        d.text((CX, Y1 + 120), f"{n_vis:,}", font=_font(F_BOLD, 54), fill=THEME['text'] + (235,), anchor="mm")
         return out
 
 

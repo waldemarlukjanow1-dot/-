@@ -61,7 +61,7 @@ def build():
     return sim, first
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and "--rizz" not in __import__("sys").argv:
     import sys
     sim, first = build()
     print("erste Quetschung", round(first, 2), "voll", sim.full_t, "Loop", sim.loop_t,
@@ -82,3 +82,48 @@ if __name__ == "__main__":
     else:
         C.render(sim, "output/a08_arc_squeeze_synthwave_vertical.mp4")
         print("output/a08_arc_squeeze_synthwave_vertical.mp4")
+
+
+# ------------------------------------------------------------------ Test: eigener Sound bei jedem Plopp
+
+def build_sample_audio(sim, path, sample="assets/rizz.wav", min_gap=0.12, vol=0.55):
+    """Bei jeder Quetschung (Verdopplung) wird das Sample abgespielt, statt des Plopps."""
+    import wave
+    SR = 44100
+    with wave.open(sample) as w:
+        smp = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float64) / 32768
+    smp = smp * np.minimum(1, np.arange(len(smp)) / (SR * 0.003))       # Klick am Anfang vermeiden
+    dur = sim.n_frames / FPS
+    n = int(SR * dur)
+    out = np.zeros(n + len(smp))
+    last = -1.0
+    for t, kind, d in sim.events:
+        if kind != "split" or t >= dur or t - last < min_gap:
+            continue
+        last = t
+        i = int(t * SR)
+        out[i:i + len(smp)] += smp * vol
+    out = out[:n]
+    out *= np.clip((dur - np.arange(n) / SR) / 0.3, 0, 1)
+    peak = np.max(np.abs(out)) or 1
+    out = np.tanh(out / peak * 1.1) * 0.85
+    st = np.stack([out, out], axis=1)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes((st * 32767).astype(np.int16).tobytes())
+
+
+if __name__ == "__main__" and "--rizz" in __import__("sys").argv:
+    from . import arcbox as A
+    sim, first = build()
+    sim.frames = sim.frames[: 8 * FPS]
+    sim.n_frames = len(sim.frames)
+    old_r, old_a = A.ArcRenderer, A.build_audio
+    A.ArcRenderer, A.build_audio = C.ShortRenderer2, build_sample_audio
+    try:
+        A.render(sim, "output/a09_rizz_test_8s_vertical.mp4")
+    finally:
+        A.ArcRenderer, A.build_audio = old_r, old_a
+    print("output/a09_rizz_test_8s_vertical.mp4", sum(1 for e in sim.events if e[1] == "split" and e[0] < 8))

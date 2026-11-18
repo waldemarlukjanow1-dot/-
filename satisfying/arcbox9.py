@@ -62,6 +62,18 @@ class ArcTriple(C.ArcLoopShort):
         ph = self.OM * t if self._phi is None else self._phi
         return self.PH[k] + ph
 
+    DUR = None
+
+    def forces(self, P, V, n, dt):
+        pass
+
+    def speed_rule(self, V, n):
+        A.keep_speed(V, n, self.SPEED)
+
+    def crush(self, i, gen, hitval, t):
+        """Generation der drei Teile zurückgeben (oder None = keine Teilung)."""
+        return gen[i] + 1
+
     def allow(self, n, t):
         if t < self.T_WAIT:
             return n + 2 <= self.N_HOOK
@@ -81,6 +93,7 @@ class ArcTriple(C.ArcLoopShort):
         SP, SV = self.STARTS
         m0 = len(SP)
         P[:m0], V[:m0] = SP, SV
+        gen[:m0] = getattr(self, "GEN0", 0)
         n = m0
         cell = 2 * r
         x0, y0 = X0 - 10, Y0 - 10
@@ -114,6 +127,7 @@ class ArcTriple(C.ArcLoopShort):
                         s = e * e * (3 - 2 * e)
                         om = om_c + (self.OM - om_c) * s
                 self._phi = phi
+                self.forces(P, V, n, dt)
                 P[:n] += V[:n] * dt
                 hit[:n] = 0
                 for k, (qx, qy) in enumerate(A.CORNERS):
@@ -137,13 +151,17 @@ class ArcTriple(C.ArcLoopShort):
                 nb = int(np.count_nonzero((bx | by) & alive))
                 if nb:
                     self.bounces.append((t, nb))
-                A.keep_speed(V, n, self.SPEED)
+                self.speed_rule(V, n)
                 P[:n][~alive] = (-500.0, -500.0)
                 if self.full_t is None:
                     for i in np.nonzero(hit[:n])[0]:
                         if n + 2 >= N or t - last[i] < self.GAP or not self.allow(n, t):
                             continue
-                        g = gen[i] + 1
+                        g = self.crush(i, gen, int(hit[i]), t)
+                        if g is None:                      # nur angeknackst, noch keine Teilung
+                            last[i] = born[i] = t
+                            self.events.append((t, "crack", {"n": n}))
+                            continue
                         vx, vy = V[i]
                         ang = math.atan2(vy, vx)
                         sp = math.hypot(vx, vy)
@@ -227,6 +245,8 @@ class ArcTriple(C.ArcLoopShort):
                                 nang[:n].astype(np.float32).copy(), scale))
             if self.loop_t is not None and t >= self.loop_t - 0.5 / FPS:
                 break
+            if self.DUR is not None and t >= self.DUR - 0.5 / FPS:
+                break
             if t > 64:
                 break
         self.end_phase_err = (phi % self.SYM, self.SYM - phi % self.SYM)
@@ -234,15 +254,16 @@ class ArcTriple(C.ArcLoopShort):
         return self
 
 
-def find_starts(seed, lo=0.45, hi=0.95, tries=3000):
+def find_starts(seed, lo=0.45, hi=0.95, tries=3000, cls=None):
+    cls = cls or ArcTriple
     rng = np.random.default_rng(seed)
     for _ in range(tries):
         SP = np.array([(rng.uniform(C.X0 + 70, C.X1 - 70), rng.uniform(C.Y0 + 70, C.Y1 - 70)) for _k in range(3)])
         if min(np.hypot(*(SP[a] - SP[b])) for a in range(3) for b in range(a + 1, 3)) < 120:
             continue
         a = rng.uniform(0, 2 * math.pi, 3)
-        SV = np.stack([np.cos(a), np.sin(a)], 1) * ArcTriple.SPEED
-        sim = ArcTriple(1)
+        SV = np.stack([np.cos(a), np.sin(a)], 1) * cls.SPEED
+        sim = cls(1)
         sim.STARTS = (SP, SV)
         first = G.probe(sim, hi + 0.2)
         if first is not None and lo <= first <= hi:
@@ -360,11 +381,11 @@ def audio(sim, path):
         out[i:i + len(ch)] += ch * g
     # 3) Crack + Klingeln bei JEDER Zerquetschung (überlappt bei vielen)
     for t, kind, _ in sim.events:
-        if kind != "split" or t >= dur:
+        if kind not in ("split", "crack") or t >= dur:
             continue
         s = _crack(rng)
         i = int(t * SR)
-        out[i:i + len(s)] += s * 0.5
+        out[i:i + len(s)] += s * (0.5 if kind == "split" else 0.28)
     tail = out[n:].copy()                               # Nachklang am Ende -> an den Anfang
     out = out[:n]
     out[:len(tail)] += tail

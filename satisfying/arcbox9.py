@@ -63,6 +63,7 @@ class ArcTriple(C.ArcLoopShort):
         return self.PH[k] + ph
 
     DUR = None
+    FORCE_FULL = 52.0
 
     def forces(self, P, V, n, dt):
         pass
@@ -193,7 +194,7 @@ class ArcTriple(C.ArcLoopShort):
             self._phi = phi
             self.omega_log.append(om)
             self.load_log.append(load_s)
-            if self.full_t is None and n >= self.N_FULL:
+            if self.full_t is None and (n >= self.N_FULL or t >= self.FORCE_FULL):
                 self.full_t = t
                 # Loop planen: Phase muss bei loop_t ein Vielfaches von 90° sein, Tempo endet beim Grundtempo
                 tmin = self.HOLD + self.POP + self.GLIDE + 0.6
@@ -209,7 +210,10 @@ class ArcTriple(C.ArcLoopShort):
                 om_c = (dphi - 0.5 * om - 0.75 * self.OM) / (tt - 1.25)
                 plan = (t, om, om_c, tl)
                 self.loop_t = tl
-                self.cand = [i for i in range(n) if gen[i] % len(B.RAINBOW) == 0]
+                L_ = len(B.RAINBOW)
+                g0 = gen[:m0] % L_
+                self.cand = [i for i in range(n) if gen[i] % L_ in set(g0.tolist())]
+                print("Kandidaten je Startfarbe", [sum(1 for i in self.cand if gen[i] % L_ == g) for g in g0])
                 cset = set(self.cand)
                 order = [i for i in rng.permutation(n) if i not in cset]
                 self.pick_t = self.loop_t - self.GLIDE
@@ -222,7 +226,7 @@ class ArcTriple(C.ArcLoopShort):
                 for s in range(m0):
                     best, bs = None, 1e18
                     for i in self.cand:
-                        if i in used:
+                        if i in used or gen[i] % L_ != g0[s]:
                             continue
                         for L in np.linspace(0.3, 1.6, 10) * want:
                             b = self.bezier(P[i].copy(), V[i].copy(), SP[s], SV[s], L)

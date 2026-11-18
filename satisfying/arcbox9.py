@@ -95,6 +95,7 @@ class ArcTriple(C.ArcLoopShort):
         m0 = len(SP)
         P[:m0], V[:m0] = SP, SV
         gen[:m0] = getattr(self, "GEN0", 0)
+        gen_start = gen[:m0].copy()
         n = m0
         cell = 2 * r
         x0, y0 = X0 - 10, Y0 - 10
@@ -211,7 +212,7 @@ class ArcTriple(C.ArcLoopShort):
                 plan = (t, om, om_c, tl)
                 self.loop_t = tl
                 L_ = len(B.RAINBOW)
-                g0 = gen[:m0] % L_
+                g0 = gen_start % L_
                 self.cand = [i for i in range(n) if gen[i] % L_ in set(g0.tolist())]
                 print("Kandidaten je Startfarbe", [sum(1 for i in self.cand if gen[i] % L_ == g) for g in g0])
                 cset = set(self.cand)

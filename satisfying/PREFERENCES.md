@@ -24,3 +24,7 @@
   eigener Sound bei jeder Quetschung (assets/rizz.wav, max. ~3 pro Sekunde), jedes Video neue Farben.
 - Sound (Rizz-Sample) NUR bei Quetschungen – bei JEDER Quetschung, ohne Mindestabstand; Überschneiden ausdrücklich erwünscht (darf wie Chaos klingen). Keine weiteren Sounds.
 - **a12 Spannungsaufbau:** Start mit nur 1 Ball, erste Quetschung erst nach ~4 s – Zuschauer sollen warten und hoffen.
+- **a14 (Vorbild "every crush splits in 3"):** jede Zerquetschung teilt in 3; Halbkreise drehen viel langsamer
+  und schwergängig (bremsen unter Last, alle synchron); graue Metall-Bögen; Ton: Motor-Brummen + "Piu" beim
+  Wandabprall + Crack/Klingeln beim Zerquetschen; keine Schrift außer der Ballzahl;
+  Dramaturgie: schneller Hook (< 1 s), Spannungsphase bei 15 Bällen, dann Explosion.

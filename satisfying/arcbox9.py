@@ -52,7 +52,7 @@ class ArcTriple(C.ArcLoopShort):
     T_HOOK, N_HOOK = 2.4, 15         # schneller Start bis 15 Bälle ...
     T_WAIT = 9.0                     # ... dann Spannung (keine Teilung) bis hier
     T_FULL = 44.0
-    SYM = math.pi / 2                # Bögen sind um 90° symmetrisch -> Loop-Bedingung
+    SYM = 2 * math.pi                # Loop nur nach vollen Umdrehungen (Phase+90° ist NICHT dasselbe Bild)
 
     def __init__(self, seed=3):
         super().__init__(seed)

@@ -50,6 +50,9 @@ def sprite(r, col, glow_amt):
     return Image.fromarray(np.dstack([np.clip(rgb, 0, 255), a * 255]).astype(np.uint8), "RGBA")
 
 
+BLOOM = 0.3                     # Leuchten über hellen Stellen (0 = aus, für helle Designs)
+
+
 class OptRenderer:
     GLOW_LEVELS = (0.8, 0.55, 0.35, 0.2)
 
@@ -171,7 +174,7 @@ class OptRenderer:
         out = im.convert("RGB").reduce(SS)
         arr = np.asarray(out, np.float32)
         gg = out.resize((W1 // 6, H1 // 6), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4)).resize((W1, H1))
-        arr = arr + np.clip(np.asarray(gg, np.float32) - 60, 0, 255) * 0.3
+        arr = arr + np.clip(np.asarray(gg, np.float32) - 60, 0, 255) * BLOOM
         # 5) Ende: Rahmen leuchtet einmal weich auf
         if end > 0:
             e = t - sim.full_t
@@ -447,7 +450,7 @@ class LoopRenderer(OptRenderer):
         out = im.convert("RGB").reduce(SS)
         arr = np.asarray(out, np.float32)
         gg = out.resize((W1 // 6, H1 // 6), Image.BILINEAR).filter(ImageFilter.GaussianBlur(4)).resize((W1, H1))
-        arr = arr + np.clip(np.asarray(gg, np.float32) - 60, 0, 255) * 0.3
+        arr = arr + np.clip(np.asarray(gg, np.float32) - 60, 0, 255) * BLOOM
         out = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
         z = 0.0
         for mt in self.miles:

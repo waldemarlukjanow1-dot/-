@@ -71,6 +71,21 @@ class ArcTriple(C.ArcLoopShort):
     def speed_rule(self, V, n):
         A.keep_speed(V, n, self.SPEED)
 
+    def pre_crush(self, i, t):
+        return False
+
+    def after_split(self, i, a, b, t):
+        pass
+
+    def substep(self, t):
+        pass
+
+    def on_frame(self, t, n):
+        pass
+
+    def excluded(self):
+        return set()
+
     def crush(self, i, gen, hitval, t):
         """Generation der drei Teile zurückgeben (oder None = keine Teilung)."""
         return gen[i] + 1
@@ -155,9 +170,14 @@ class ArcTriple(C.ArcLoopShort):
                     self.bounces.append((t, nb))
                 self.speed_rule(V, n)
                 P[:n][~alive] = (-500.0, -500.0)
+                self._ctx = (P, V, gen, gone, last, born)
                 if self.full_t is None:
+                    na = int(np.count_nonzero(alive))
                     for i in np.nonzero(hit[:n])[0]:
-                        if n + 2 >= N or t - last[i] < self.GAP or not self.allow(n, t):
+                        self._n = n
+                        if self.pre_crush(i, t):
+                            continue
+                        if n + 2 >= N or t - last[i] < self.GAP or not self.allow(na, t):
                             continue
                         g = self.crush(i, gen, int(hit[i]), t)
                         if g is None:                      # nur angeknackst, noch keine Teilung
@@ -179,9 +199,13 @@ class ArcTriple(C.ArcLoopShort):
                         mn = min(dl, dr_, dt_, db)
                         nang[i] = nang[n] = nang[n + 1] = 0.0 if mn in (dl, dr_) else math.pi / 2
                         self.arc_squeeze[int(hit[i]) - 1].append(t)
-                        self.events.append((t, "split", {"n": n + 2, "gen": int(g)}))
+                        self.events.append((t, "split", {"n": na + 2, "gen": int(g)}))
+                        self.after_split(i, n, n + 1, t)
                         n += 2
+                        na += 2
                     A.box_walls(P, V, n, r)
+                self._n = n
+                self.substep(t)
                 for i, (b, cs, uu, L) in self.glides.items():
                     T = self.loop_t - self.pick_t
                     sd = min(L, (t - self.pick_t) * L / T)
@@ -195,7 +219,8 @@ class ArcTriple(C.ArcLoopShort):
             self._phi = phi
             self.omega_log.append(om)
             self.load_log.append(load_s)
-            if self.full_t is None and (n >= self.N_FULL or t >= self.FORCE_FULL):
+            self.on_frame(t, n)
+            if self.full_t is None and (int(np.count_nonzero(gone[:n] > t)) >= self.N_FULL or t >= self.FORCE_FULL):
                 self.full_t = t
                 # Loop planen: Phase muss bei loop_t ein Vielfaches von 90° sein, Tempo endet beim Grundtempo
                 tmin = self.HOLD + self.POP + self.GLIDE + 0.6
@@ -213,10 +238,11 @@ class ArcTriple(C.ArcLoopShort):
                 self.loop_t = tl
                 L_ = len(B.RAINBOW)
                 g0 = gen_start % L_
-                self.cand = [i for i in range(n) if gen[i] % L_ in set(g0.tolist())]
+                excl = self.excluded()
+                self.cand = [i for i in range(n) if gen[i] % L_ in set(g0.tolist()) and gone[i] > t and i not in excl]
                 print("Kandidaten je Startfarbe", [sum(1 for i in self.cand if gen[i] % L_ == g) for g in g0])
                 cset = set(self.cand)
-                order = [i for i in rng.permutation(n) if i not in cset]
+                order = [i for i in rng.permutation(n) if i not in cset and gone[i] > t]
                 self.pick_t = self.loop_t - self.GLIDE
                 t0 = self.pick_t - self.POP - 0.1
                 for j, i in enumerate(order):

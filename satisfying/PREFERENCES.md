@@ -28,3 +28,6 @@
   und schwergängig (bremsen unter Last, alle synchron); graue Metall-Bögen; Ton: Motor-Brummen + "Piu" beim
   Wandabprall + Crack/Klingeln beim Zerquetschen; keine Schrift außer der Ballzahl;
   Dramaturgie: schneller Hook (< 1 s), Spannungsphase bei 15 Bällen, dann Explosion.
+- **Regeln (ab Jelly-Serie):** KEINE Bomben/Zufallseffekte. Neue Bälle entstehen NUR durch Zerquetschen, genau an der
+  Stelle des zerquetschten Balls (einzige Entstehungsposition). Bälle als glänzende, wabbelnde Jellys.
+  Quetsch-Sound: "HUSS!" (assets/huss_1..6.wav, aus Nutzer-Upload), bei jeder Quetschung, Überlappen erlaubt.

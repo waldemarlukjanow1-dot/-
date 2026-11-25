@@ -31,3 +31,5 @@
 - **Regeln (ab Jelly-Serie):** KEINE Bomben/Zufallseffekte. Neue Bälle entstehen NUR durch Zerquetschen, genau an der
   Stelle des zerquetschten Balls (einzige Entstehungsposition). Bälle als glänzende, wabbelnde Jellys.
   Quetsch-Sound: "HUSS!" (assets/huss_1..6.wav, aus Nutzer-Upload), bei jeder Quetschung, Überlappen erlaubt.
+- **Viral-Hebel (a30):** Hook < 1,5 s, Tonhöhe des Quetsch-Sounds steigt mit der Ballzahl, ~45 s statt 51 s,
+  Glanz-Welle über alle Bälle, wenn das Quadrat voll ist (Belohnung, kein Ring/Text).
